@@ -2,6 +2,8 @@ project(rime-aipara)
 cmake_minimum_required(VERSION 3.10)
 
 aux_source_directory(src aipara_src)
+aux_source_directory(src/common aipara_common_src)
+set(aipara_src ${aipara_src} ${aipara_common_src})
 
 add_library(rime-aipara-objs OBJECT ${aipara_src})
 if(BUILD_SHARED_LIBS)
