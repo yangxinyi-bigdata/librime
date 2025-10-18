@@ -2,6 +2,7 @@
 
 #include <rime/config.h>
 #include <rime/context.h>
+#include <rime/engine.h>
 #include <rime/key_event.h>
 
 namespace rime::aipara {
@@ -22,7 +23,7 @@ SmartCursorProcessor::~SmartCursorProcessor() {
   update_connection_.disconnect();
 }
 
-Processor::ProcessResult SmartCursorProcessor::ProcessKeyEvent(
+ProcessResult SmartCursorProcessor::ProcessKeyEvent(
     const KeyEvent&) {
   // TODO: implement smart cursor movement logic.
   return kNoop;

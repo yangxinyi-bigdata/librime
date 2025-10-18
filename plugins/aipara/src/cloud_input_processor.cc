@@ -14,7 +14,7 @@ CloudInputProcessor::CloudInputProcessor(const Ticket& ticket)
 
 CloudInputProcessor::~CloudInputProcessor() = default;
 
-Processor::ProcessResult CloudInputProcessor::ProcessKeyEvent(
+ProcessResult CloudInputProcessor::ProcessKeyEvent(
     const KeyEvent&) {
   // TODO: port cloud input handling logic.
   return kNoop;
