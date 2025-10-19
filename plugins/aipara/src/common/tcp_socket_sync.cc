@@ -7,6 +7,16 @@
 // 以上四个头文件来自 Rime 核心库，提供了配置对象 Config、输入上下文 Context 等类的定义。
 // 它们就像 Python 包里的模块。只要你想在这里访问 Rime 的运行时信息，就必须包含对应的头文件。
 
+#ifdef Bool
+#undef Bool
+#endif
+#ifdef True
+#undef True
+#endif
+#ifdef False
+#undef False
+#endif
+
 #include <rapidjson/document.h>
 #include <rapidjson/error/en.h>
 #include <rapidjson/stringbuffer.h>
@@ -355,11 +365,11 @@ class TcpSocketSync::AiparaSocketBridge {
     // 这里用两个索引记录各自位置，方便后面判断哪一个触发了事件。
     if (rime_socket_) {
       rime_index = static_cast<int>(items.size());
-      items.emplace_back(*rime_socket_, 0, ZMQ_POLLIN, 0);
+      items.emplace_back(zmq::pollitem_t{rime_socket_->handle(), 0, ZMQ_POLLIN, 0});
     }
     if (ai_socket_) {
       ai_index = static_cast<int>(items.size());
-      items.emplace_back(*ai_socket_, 0, ZMQ_POLLIN, 0);
+      items.emplace_back(zmq::pollitem_t{ai_socket_->handle(), 0, ZMQ_POLLIN, 0});
     }
     if (items.empty()) {
       // 如果连一个 socket 都没有，说明当前还没连接成功，直接睡眠以避免空转。
@@ -699,6 +709,11 @@ bool TcpSocketSync::SendChatMessage(const std::string& commit_text,
   const std::string payload = SerializeJson(doc);
   AIPARA_LOG_DEBUG(logger_, "发送 AI 对话请求: " + payload);
   return send_to_ai_socket(payload);
+}
+
+std::optional<std::string> TcpSocketSync::ReadLatestAiMessage(
+    double timeout_seconds) {
+  return read_latest_from_ai_socket(timeout_seconds);
 }
 
 void TcpSocketSync::SyncWithServer() {

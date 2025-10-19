@@ -11,8 +11,16 @@ if(BUILD_SHARED_LIBS)
     PROPERTIES
     POSITION_INDEPENDENT_CODE ON)
 endif()
+target_include_directories(rime-aipara-objs PRIVATE
+  ${CMAKE_SOURCE_DIR}/deps/opencc/deps/rapidjson-1.1.0
+  ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+find_library(ZeroMQ_LIBRARY NAMES zmq)
+if(NOT ZeroMQ_LIBRARY)
+  message(FATAL_ERROR "libzmq 未找到，请安装 ZeroMQ。")
+endif()
 
 set(plugin_name rime-aipara PARENT_SCOPE)
 set(plugin_objs $<TARGET_OBJECTS:rime-aipara-objs> PARENT_SCOPE)
-set(plugin_deps ${rime_library} PARENT_SCOPE)
+set(plugin_deps ${rime_library} ${ZeroMQ_LIBRARY} PARENT_SCOPE)
 set(plugin_modules "aipara" PARENT_SCOPE)

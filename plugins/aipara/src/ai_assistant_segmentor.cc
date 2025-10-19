@@ -15,7 +15,7 @@
 namespace rime::aipara {
 
 AiAssistantSegmentor::AiAssistantSegmentor(const Ticket& ticket)
-    : Segmentor(ticket), logger_(MakeLogger("ai_assistant_segmentor_cpp")) {}
+    : Segmentor(ticket), logger_(MakeLogger("ai_assistant_segmentor")) {}
 // 上面是构造函数，冒号后的是“成员初始化列表”。
 // 先调用基类构造函数 Segmentor(ticket)，再初始化 logger_。
 // MakeLogger 返回一个 Logger 对象，用来记录调试信息。

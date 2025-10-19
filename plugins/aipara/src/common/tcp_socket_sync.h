@@ -16,6 +16,12 @@
 #include <unordered_map>
 #include <vector>
 
+#ifdef Bool
+#undef Bool
+#endif
+
+#include <rapidjson/document.h>
+
 #include "common/logger.h"
 // 头文件里只写声明，不写具体实现（实现放在 .cc）。这里提前包含 logger 的声明，方便在类里使用。
 
@@ -23,10 +29,6 @@ namespace rime {
 class Config;
 class Context;
 }  // namespace rime
-
-namespace rapidjson {
-class Value;
-}  // namespace rapidjson
 
 namespace rime::aipara {
 
@@ -98,6 +100,9 @@ class TcpSocketSync {
   bool SendChatMessage(const std::string& commit_text,
                        const std::string& assistant_id,
                        const std::string& response_key);
+
+  std::optional<std::string> ReadLatestAiMessage(
+      double timeout_seconds = 0.0);
 
   void SyncWithServer();
   void SyncWithServer(Context* context);
