@@ -1,5 +1,5 @@
-#ifndef PLUGINS_AIPARA_SRC_TEXT_FORMATTING_H_
-#define PLUGINS_AIPARA_SRC_TEXT_FORMATTING_H_
+#ifndef PLUGINS_AIPARA_SRC_COMMON_TEXT_FORMATTING_H_
+#define PLUGINS_AIPARA_SRC_COMMON_TEXT_FORMATTING_H_
 
 #include <string>
 
@@ -10,4 +10,4 @@ std::string ApplyTextFormatting(const std::string& text);
 
 }  // namespace rime::aipara
 
-#endif  // PLUGINS_AIPARA_SRC_TEXT_FORMATTING_H_
+#endif  // PLUGINS_AIPARA_SRC_COMMON_TEXT_FORMATTING_H_

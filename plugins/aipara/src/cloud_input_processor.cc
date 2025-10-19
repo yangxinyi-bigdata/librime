@@ -5,7 +5,7 @@
 #include <rime/key_event.h>
 #include <rime/schema.h>
 
-#include "tcp_socket_sync.h"
+#include "common/tcp_socket_sync.h"
 
 namespace rime::aipara {
 

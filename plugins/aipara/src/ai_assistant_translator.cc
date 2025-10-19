@@ -3,7 +3,7 @@
 #include <rime/config.h>
 #include <rime/translation.h>
 
-#include "tcp_socket_sync.h"
+#include "common/tcp_socket_sync.h"
 
 namespace rime::aipara {
 
