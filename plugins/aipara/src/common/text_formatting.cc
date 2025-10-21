@@ -1,3 +1,15 @@
+// 本文件实现了与“文本格式化/切分/查找”相关的函数。
+// 主题关键词：UTF-8 安全处理、中文/英文标点替换、原始英文（rawenglish）区域跳过、
+//             文本分段、日志辅助。
+//
+// 新手总览：
+// - C++ 字符串（std::string）是字节序列，并不知道“字符”的概念；
+//   UTF-8 下，一个“字符”可能占 1~4 个字节。因此“按字符”截取必须先解析 UTF-8。
+// - 这里通过 BuildUtf8Index 建立“字节到字符”的索引，避免在多字节字符上截断。
+// - 代码广泛使用 const 引用（const T&）避免拷贝、使用 std::optional 表示可能无值，
+//   使用 std::vector / unordered_map 等 STL 容器管理数据。
+// - 与 Python 对比：Python 的 str 是 Unicode 码点序列（更贴近“字符”），
+//   C++ 里 std::string 是“字节”，要自己管理编码边界。
 #include "text_formatting.h"
 
 #include <rime/config.h>
@@ -11,7 +23,13 @@
 
 namespace rime::aipara::text_formatting {
 namespace {
+// 此匿名命名空间（anonymous namespace）中的成员仅在本翻译单元内可见，
+// 相当于“私有”实现细节，避免与其他 .cc 文件中的同名符号冲突。
 
+// Utf8CharInfo 用来描述一个 UTF-8 字符（码点）在原字符串中的信息：
+// - byte_index：此字符起始的“字节索引”（不是字符索引）。
+// - byte_length：此字符占用的字节数（1~4）。
+// - codepoint：Unicode 码点（32 位无符号整数）。
 struct Utf8CharInfo {
   std::size_t byte_index;
   std::size_t byte_length;
@@ -20,6 +38,8 @@ struct Utf8CharInfo {
 
 constexpr std::string_view kChinesePosPrefix{"chinese_pos:"};
 
+// 根据 UTF-8 领先字节（lead byte）判断一个字符占用的字节数。
+// 坑点：不要把 char 直接当成有符号数参与位运算，这里用 unsigned char 更安全。
 std::size_t Utf8SequenceLength(unsigned char lead) {
   if ((lead & 0x80) == 0) {
     return 1;
@@ -36,6 +56,9 @@ std::size_t Utf8SequenceLength(unsigned char lead) {
   return 1;
 }
 
+// 从给定字节偏移（offset）和长度（length）解码出一个 Unicode 码点。
+// 假设传入的位置和长度是合法的 UTF-8 序列（调用方负责确保）。
+// 返回 0 作为“无效/占位”。
 std::uint32_t DecodeCodepoint(const std::string& text,
                               std::size_t offset,
                               std::size_t length) {
@@ -63,6 +86,8 @@ std::uint32_t DecodeCodepoint(const std::string& text,
   }
 }
 
+// 将 Unicode 码点编码回 UTF-8 字节序列（std::string）。
+// 常用于构造单字符的 UTF-8 字符串。
 std::string EncodeCodepoint(std::uint32_t codepoint) {
   std::string result;
   if (codepoint <= 0x7F) {
@@ -83,6 +108,8 @@ std::string EncodeCodepoint(std::uint32_t codepoint) {
   return result;
 }
 
+// 构建 UTF-8 索引：线性扫描字符串，记录每个字符的起始字节位置、字节数、码点。
+// 有了这个索引，就可以“按字符”安全地截取子串，而不是误按字节截断。
 std::vector<Utf8CharInfo> BuildUtf8Index(const std::string& text) {
   std::vector<Utf8CharInfo> index;
   index.reserve(text.size());
@@ -98,6 +125,8 @@ std::vector<Utf8CharInfo> BuildUtf8Index(const std::string& text) {
   return index;
 }
 
+// 将枚举值映射为对应的字符串。std::string_view 是“只读字符串视图”，
+// 不拥有内存，避免不必要拷贝。类似 Python 的切片视图但不可变。
 std::string_view SegmentTypeString(SegmentKind kind) {
   switch (kind) {
     case SegmentKind::kAbc:
@@ -110,6 +139,9 @@ std::string_view SegmentTypeString(SegmentKind kind) {
   return "abc";
 }
 
+// 工厂函数：根据入参构造一个 TextSegment。
+// 这里用值传参 + std::move 将临时字符串（content/original）高效移动到结构体里，
+// 避免拷贝。C++11 的移动语义可显著减少内存分配与复制。
 TextSegment MakeSegment(SegmentKind kind,
                         std::string content,
                         std::string original,
@@ -131,6 +163,8 @@ std::string& EnglishModeSymbolStorage() {
   return symbol;
 }
 
+// PunctMap：ASCII -> 中文标点 映射表。使用函数内静态指针+lambda 延迟初始化，
+// 确保只构造一次（线程安全从 C++11 起保证）。
 const std::vector<std::pair<std::string, std::string>>& PunctMap() {
   static const std::vector<std::pair<std::string, std::string>>* map = [] {
     auto* punct = new std::vector<std::pair<std::string, std::string>>{
@@ -152,6 +186,7 @@ const std::vector<std::pair<std::string, std::string>>& PunctMap() {
   return *map;
 }
 
+// 中文标点集合，用于快速判断某个 UTF-8 字符是否中文标点。
 const std::unordered_set<std::string>& ChinesePunctSet() {
   static const std::unordered_set<std::string>* set = [] {
     auto* punct = new std::unordered_set<std::string>{
@@ -172,6 +207,8 @@ const std::unordered_set<std::string>& ChinesePunctSet() {
   return *set;
 }
 
+// handle_keys 表：把按键名（如 "comma"、"Shift+1"）映射为实际字符。
+// SmartCursorProcessor 的未处理键监控会用它把按键转换成可回传服务端的字符。
 const std::unordered_map<std::string, std::string>& HandleKeysStorage() {
   static const std::unordered_map<std::string, std::string>* map = [] {
     auto* handle = new std::unordered_map<std::string, std::string>{
@@ -265,6 +302,9 @@ const std::unordered_map<std::string, std::string>& HandleKeysStorage() {
   return *map;
 }
 
+// 字符串批量替换：把 text 中的所有 from 子串替换为 to。
+// 传入指针 std::string* 是为了“原地修改”字符串；
+// Python 类比：函数内直接修改传入的 list/dict。
 void ReplaceAll(std::string* text,
                 const std::string& from,
                 const std::string& to) {
@@ -278,6 +318,7 @@ void ReplaceAll(std::string* text,
   }
 }
 
+// 判断是否包含 ASCII 标点。include_backtick 控制是否把反引号 ` 也算进标点集合。
 bool ContainsAsciiPunctuation(const std::string& text,
                               bool include_backtick) {
   static const std::string kAscii =
@@ -293,6 +334,7 @@ bool ContainsAsciiPunctuation(const std::string& text,
   return false;
 }
 
+// 判断是否包含中文标点（需要按 UTF-8 字符粒度检查，而不是逐字节）。
 bool ContainsChinesePunctuation(const std::string& text) {
   const auto index = BuildUtf8Index(text);
   const auto& set = ChinesePunctSet();
@@ -305,12 +347,14 @@ bool ContainsChinesePunctuation(const std::string& text) {
   return false;
 }
 
+// 是否为“切分”标点字符：用于把连续英文/数字与标点分段。
 bool IsSplitterPunctuation(unsigned char ch) {
   static const std::string kSplitterChars =
       ",.!?;:()[]<>/_=+*&^%$#@~|%-`'\"";
   return kSplitterChars.find(static_cast<char>(ch)) != std::string::npos;
 }
 
+// 判断某个字节位置 pos 是否落在某个范围对 [first, second) 内。
 bool PositionInRanges(std::size_t pos,
                       const std::vector<std::pair<std::size_t, std::size_t>>& ranges) {
   for (const auto& range : ranges) {
@@ -321,6 +365,8 @@ bool PositionInRanges(std::size_t pos,
   return false;
 }
 
+// 根据“英文模式符号”（如反引号）构建需要跳过处理的范围列表：
+// 范围包括成对符号包裹的内容，若存在单个未闭合的开始符号，则范围延伸到字符串末尾。
 std::vector<std::pair<std::size_t, std::size_t>> BuildRawEnglishRanges(
     const std::string& input) {
   std::vector<std::pair<std::size_t, std::size_t>> ranges;
@@ -348,6 +394,7 @@ std::vector<std::pair<std::size_t, std::size_t>> BuildRawEnglishRanges(
   return ranges;
 }
 
+// 打印片段列表到日志，便于调试。
 void LogSegments(Logger* logger,
                  const std::vector<TextSegment>& segments) {
   if (!logger) {
@@ -364,6 +411,8 @@ void LogSegments(Logger* logger,
 
 }  // namespace
 
+// 根据 Rime Config 更新当前模块使用的英文模式标识符（如反引号）。
+// config 可能为 nullptr，因此调用前后都要判空。
 void UpdateCurrentConfig(Config* config) {
   if (!config) {
     return;
@@ -375,12 +424,14 @@ void UpdateCurrentConfig(Config* config) {
   }
 }
 
+// 设置英文模式符号。传引用（const std::string&）避免拷贝；内部保存时直接赋值。
 void SetEnglishModeSymbol(const std::string& symbol) {
   if (!symbol.empty()) {
     EnglishModeSymbolStorage() = symbol;
   }
 }
 
+// 提供英文模式符号的只读引用，避免额外拷贝。
 const std::string& english_mode_symbol() {
   return EnglishModeSymbolStorage();
 }
@@ -389,6 +440,10 @@ const std::unordered_map<std::string, std::string>& handle_keys() {
   return HandleKeysStorage();
 }
 
+// 按“字符”而非字节截取子串：
+// - start_char/end_char 以“1”为起始（类似 Lua），支持负数（从末尾算起）。
+// - 与 Python 切片不同：这里是包含式下标，最终会换算为字节范围做 substr。
+// 常见坑：直接用 substr(字节偏移) 会把多字节字符截断，导致乱码。
 std::string Utf8Substr(const std::string& str,
                        int start_char,
                        int end_char) {
@@ -422,6 +477,8 @@ std::string Utf8Substr(const std::string& str,
   return str.substr(start_byte, end_byte - start_byte);
 }
 
+// 替换英文双引号为中文引号，并记录“当前是否处于开引号状态”。
+// 这样可以跨多段文本连续处理成对引号。返回 pair 的第二个布尔值就是状态位。
 std::pair<std::string, bool> ReplaceQuotesRecordSingle(
     const std::string& text,
     bool double_quote_open) {
@@ -446,10 +503,13 @@ std::pair<std::string, bool> ReplaceQuotesRecordSingle(
   return {result, double_quote_open};
 }
 
+// 简化版本：从“开引号”状态为 true 开始替换。
 std::string ReplaceQuotes(const std::string& text) {
   return ReplaceQuotesRecordSingle(text, true).first;
 }
 
+// 将英文标点替换成中文（含引号替换）。
+// 处理顺序：先引号，再其它标点，避免冲突。
 std::string ReplacePunct(const std::string& text) {
   if (text.empty()) {
     return text;
@@ -461,6 +521,10 @@ std::string ReplacePunct(const std::string& text) {
   return result;
 }
 
+// 根据“中文文本位置列表”进行选择性替换：
+// - chinese_pos 形如 "chinese_pos:start,end,..."，单位为“字符序号”（非字节）。
+// - 只对这些区间对应的文本执行标点替换；其他部分保持原样。
+// - 返回 std::nullopt 表示坐标串非法或为空。
 std::optional<std::string> ReplacePunctSkipPos(
     const std::string& text,
     const std::string& chinese_pos,
@@ -556,6 +620,9 @@ std::optional<std::string> ReplacePunctSkipPos(
   return final_text;
 }
 
+// 跳过“英文模式”区域的标点替换：
+// - 若文本中不含英文模式符号，则退化为普通 ReplacePunct。
+// - 若含有，则在符号包裹的片段内不做替换，保持原样。
 std::string ReplacePunctSkipRawEnglish(const std::string& text,
                                        Logger* logger) {
   if (text.empty()) {
@@ -607,6 +674,7 @@ std::string ReplacePunctSkipRawEnglish(const std::string& text,
   return result;
 }
 
+// 原始版本的替换：不处理引号开合，仅用映射表逐个替换。
 std::string ReplacePunctOriginal(const std::string& text) {
   if (text.empty()) {
     return text;
@@ -618,6 +686,7 @@ std::string ReplacePunctOriginal(const std::string& text) {
   return result;
 }
 
+// 快速检测字符串是否包含任何 ASCII 标点（包括 `）。
 bool HasPunctuation(const std::string& text, Logger* logger) {
   if (text.empty()) {
     return false;
@@ -634,6 +703,7 @@ bool HasPunctuation(const std::string& text, Logger* logger) {
   return has_punct;
 }
 
+// 检测是否包含标点（不计入反引号），若没有 ASCII 标点再检查中文标点集合。
 bool HasPunctuationNoRawEnglish(const std::string& text, Logger* logger) {
   if (text.empty()) {
     return false;

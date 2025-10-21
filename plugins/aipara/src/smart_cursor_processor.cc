@@ -1,3 +1,7 @@
+// 实现 SmartCursorProcessor：
+// - 处理按键（分片跳转、按标点跳转、搜索模式、粘贴请求等）。
+// - 响应上下文事件（select/commit/update/...），与服务端同步状态。
+// - 根据 app_options/Vim 模式动态调整 Rime 选项（如 ascii_mode）。
 #include "smart_cursor_processor.h"
 
 #include <rime/composition.h>
@@ -24,6 +28,7 @@
 namespace rime::aipara {
 
 namespace {
+// “搜索移动模式”的提示常量。
 constexpr std::string_view kSearchMovePrompt = u8" ▶ [搜索模式:] ";
 constexpr std::string_view kSearchMovePromptPrefix = u8" ▶ [搜索模式:";
 
@@ -34,12 +39,14 @@ std::string MakeSearchPrompt(const std::string& value) {
   return prompt;
 }
 
+// 判断是否为单个 ASCII 字母。
 bool IsAsciiAlpha(const std::string& key_repr) {
   return key_repr.size() == 1 &&
          ((key_repr[0] >= 'a' && key_repr[0] <= 'z') ||
           (key_repr[0] >= 'A' && key_repr[0] <= 'Z'));
 }
 
+// 判断是否为单个 ASCII 标点。
 bool IsAsciiPunctChar(const std::string& key_repr) {
   return key_repr.size() == 1 &&
          std::ispunct(static_cast<unsigned char>(key_repr[0])) != 0;
@@ -48,10 +55,12 @@ bool IsAsciiPunctChar(const std::string& key_repr) {
 
 SmartCursorProcessor::SmartCursorProcessor(const Ticket& ticket)
     : Processor(ticket),
-      logger_(MakeLogger("smart_cursor_processor_cpp")) {
+      logger_(MakeLogger("smart_cursor_processor")) {
+  // 清空历史日志（若 Logger 支持该语义）。
   logger_.Clear();
   AIPARA_LOG_INFO(logger_, "SmartCursorProcessor initialized.");
 
+  // 初始化“ASCII 标点集合”，用于快速跳转。
   const std::string punctuation_chars = ",.!?;:()[]<>/_=+*&^%$#@~|-'\"";
   for (char ch : punctuation_chars) {
     punctuation_chars_.insert(ch);
@@ -84,6 +93,7 @@ void SmartCursorProcessor::DisconnectAll() {
   unhandled_key_connection_.disconnect();
 }
 
+// 在给定 Context 上挂接回调，监听选择/提交/更新/属性更新/未处理键等事件。
 void SmartCursorProcessor::InitializeContextHooks(Context* context) {
   DisconnectAll();
   if (!context) {
@@ -123,6 +133,7 @@ void SmartCursorProcessor::InitializeContextHooks(Context* context) {
           });
 }
 
+// 配置变更时重置 composing 状态缓存，避免干扰后续逻辑。
 void SmartCursorProcessor::UpdateCurrentConfig(Config*) {
   previous_is_composing_.reset();
 }
@@ -234,6 +245,7 @@ ProcessResult SmartCursorProcessor::ProcessKeyEvent(
   return kNoop;
 }
 
+// 选词完成：退出搜索模式，清理 spans（用于范围可视化等）。
 void SmartCursorProcessor::OnSelect(Context* context) {
   if (!context) {
     return;
@@ -247,6 +259,7 @@ void SmartCursorProcessor::OnSelect(Context* context) {
   spans_manager::ClearSpans(context, "选词完成", &logger_);
 }
 
+// 提交文本：清空缓存输入；把 send_key 透传给服务端；同步上下文/配置。
 void SmartCursorProcessor::OnCommit(Context* context) {
   if (!context) {
     return;
@@ -266,6 +279,7 @@ void SmartCursorProcessor::OnCommit(Context* context) {
   SyncWithServer(context, true);
 }
 
+// 非 composing 阶段的更新：把一次性标志位复位，防止后续逻辑误判。
 void SmartCursorProcessor::OnUpdate(Context* context) {
   if (!context || context->IsComposing()) {
     return;
@@ -306,6 +320,9 @@ void SmartCursorProcessor::OnUpdate(Context* context) {
   }
 }
 
+// 扩展更新：
+// - 与服务端同步；
+// - 处理 composing 状态的边缘切换（用于补全输入、自动加触发词等）。
 void SmartCursorProcessor::OnExtendedUpdate(Context* context) {
   if (!context) {
     return;
@@ -346,6 +363,9 @@ void SmartCursorProcessor::OnExtendedUpdate(Context* context) {
   }
 }
 
+// 属性变更：
+// - 切换 client_app 时应用对应 app_options；
+// - 收到 config_update_flag 时重新应用所有选项。
 void SmartCursorProcessor::OnPropertyUpdate(Context* context,
                                             const std::string& property) {
   if (!context) {
@@ -372,6 +392,9 @@ void SmartCursorProcessor::OnPropertyUpdate(Context* context,
   }
 }
 
+// 未处理按键：
+// - 与服务端同步；
+// - 若为可映射字符，则记录 last_unhandled_char。
 void SmartCursorProcessor::OnUnhandledKey(Context* context,
                                           const KeyEvent& key_event) {
   if (!context) {
@@ -389,6 +412,11 @@ void SmartCursorProcessor::OnUnhandledKey(Context* context,
   }
 }
 
+// 搜索移动模式：
+// - 接受 ASCII 字母/标点或 Tab；
+// - 在“已确认输入”后的区域进行查找；
+// - 借助 text_formatting 的查找函数可跳过 rawenglish 区域；
+// - 找到后把光标移动到匹配末尾。
 bool SmartCursorProcessor::HandleSearchMode(const std::string& key_repr,
                                             Context* context,
                                             Config*,
@@ -464,6 +492,7 @@ bool SmartCursorProcessor::HandleSearchMode(const std::string& key_repr,
   return false;
 }
 
+// 退出“搜索移动模式”。
 void SmartCursorProcessor::ExitSearchMode(Context* context, Segment* segment) {
   if (!context) {
     return;
@@ -476,6 +505,7 @@ void SmartCursorProcessor::ExitSearchMode(Context* context, Segment* segment) {
   }
 }
 
+// 光标移动到下一个 ASCII 标点；若无则移到输入末尾。
 bool SmartCursorProcessor::MoveToNextPunctuation(Context* context) {
   if (!context) {
     return false;
@@ -506,6 +536,7 @@ bool SmartCursorProcessor::MoveToNextPunctuation(Context* context) {
   return true;
 }
 
+// 光标移动到上一个 ASCII 标点；若无则回到当前 segment 起点。
 bool SmartCursorProcessor::MoveToPrevPunctuation(Context* context) {
   if (!context) {
     return false;
@@ -541,6 +572,7 @@ bool SmartCursorProcessor::MoveToPrevPunctuation(Context* context) {
   return true;
 }
 
+// 按 spans（逻辑范围）进行光标跳转。
 bool SmartCursorProcessor::MoveBySpans(Context* context, bool move_next) {
   if (!context) {
     return false;
@@ -556,6 +588,7 @@ bool SmartCursorProcessor::MoveBySpans(Context* context, bool move_next) {
   return true;
 }
 
+// 应用全局开关至上下文（通过 TcpSocketSync）。
 void SmartCursorProcessor::ApplyGlobalOptions(Context* context) {
   if (!tcp_socket_sync_ || !context) {
     return;
@@ -567,6 +600,7 @@ void SmartCursorProcessor::ApplyGlobalOptions(Context* context) {
   }
 }
 
+// 按当前 app 的配置设置上下文开关。
 void SmartCursorProcessor::ApplyAppOptions(const std::string& current_app,
                                            Context* context,
                                            Config* config) {
@@ -604,6 +638,8 @@ void SmartCursorProcessor::ApplyAppOptions(const std::string& current_app,
   }
 }
 
+// 读取用户目录中的 vim 模式文件，切换 ascii_mode：
+// normal_mode -> true，insert_mode -> false。
 void SmartCursorProcessor::UpdateAsciiModeFromVimState(
     const std::string& app_key,
     Context* context,
@@ -655,6 +691,7 @@ void SmartCursorProcessor::UpdateAsciiModeFromVimState(
   }
 }
 
+// 将 app 名中的 '.' 替换为 '_'，用于匹配配置键/文件名。
 std::string SmartCursorProcessor::SanitizeAppKey(
     const std::string& app_name) const {
   std::string sanitized = app_name;
@@ -662,6 +699,7 @@ std::string SmartCursorProcessor::SanitizeAppKey(
   return sanitized;
 }
 
+// 获取当前 schema 的 config 指针，可能为 nullptr。
 Config* SmartCursorProcessor::CurrentConfig() const {
   if (!engine_) {
     return nullptr;
@@ -672,6 +710,7 @@ Config* SmartCursorProcessor::CurrentConfig() const {
   return nullptr;
 }
 
+// 读取字符串配置，失败则返回 fallback。
 std::string SmartCursorProcessor::GetConfigString(
     const std::string& path,
     const std::string& fallback) const {
@@ -686,6 +725,7 @@ std::string SmartCursorProcessor::GetConfigString(
   return fallback;
 }
 
+// 读取布尔配置，失败则返回 fallback。
 bool SmartCursorProcessor::GetConfigBool(const std::string& path,
                                          bool fallback) const {
   Config* config = CurrentConfig();
@@ -699,6 +739,7 @@ bool SmartCursorProcessor::GetConfigBool(const std::string& path,
   return fallback;
 }
 
+// 加载 ai_assistant/ai_prompts 下的 chat_triggers，返回触发词映射表。
 std::unordered_map<std::string, std::string>
 SmartCursorProcessor::LoadChatTriggers(Config* config) const {
   std::unordered_map<std::string, std::string> triggers;
@@ -719,6 +760,7 @@ SmartCursorProcessor::LoadChatTriggers(Config* config) const {
   return triggers;
 }
 
+// 同步到服务端：可选是否包含配置。
 void SmartCursorProcessor::SyncWithServer(Context* context,
                                           bool include_config) const {
   if (!tcp_socket_sync_) {

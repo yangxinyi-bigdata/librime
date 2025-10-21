@@ -1,3 +1,6 @@
+// 实现 AiAssistantTranslator：把 Rime 的查询请求（Query）根据标签路由到
+// 不同的处理逻辑（清空历史/AI 对话/AI 回复），并通过 TcpSocketSync 轮询
+// 外部服务的增量消息，解析 JSON，更新上下文，生成候选。
 #include "ai_assistant_translator.h"
 
 #include <rime/candidate.h>
@@ -12,6 +15,8 @@
 #include <utility>
 #include <string_view>
 
+// 处理可能的宏污染：有些平台/头文件可能把 Bool/True/False 定义为宏，
+// 这里统一取消定义，避免与 C++ 关键字/标识符冲突。
 #ifdef Bool
 #undef Bool
 #endif
@@ -24,25 +29,34 @@
 
 #include <rapidjson/document.h>
 #include <rapidjson/error/en.h>
-
+// 可以考虑先搞一个简单白本,不用tcp协议,就可以更加简单的测试了
 #include "common/tcp_socket_sync.h"
 
 namespace rime::aipara {
 
 namespace {
+// 常量：
+// - kAiSocketTimeoutSeconds：读取 AI socket 的超时时间（秒）。
+// - kDefaultWaitingMessage：展示给用户的“等待中”提示。
+// 这利只是设置两个常量,应该没什么影响
 constexpr double kAiSocketTimeoutSeconds = 0.1;
 constexpr std::string_view kDefaultWaitingMessage = "等待回复...";
 
+// 从字符串末尾移除指定后缀（若存在）。按值传参（value）允许在函数内就地修改副本，
+// 避免修改调用者的原始字符串。
 std::string RemoveSuffix(std::string value, const std::string& suffix) {
+  // 如果 suffix 比 value 长，直接返回 value。
   if (suffix.size() > value.size()) {
     return value;
   }
+  // 如果 value 以 suffix 结尾，移除 suffix。
   if (value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0) {
     value.resize(value.size() - suffix.size());
   }
   return value;
 }
 
+// 把标签集合 join 成逗号分隔字符串，方便日志打印。
 std::string TagsToString(const std::set<std::string>& tags) {
   std::string joined;
   for (const auto& tag : tags) {
@@ -55,6 +69,7 @@ std::string TagsToString(const std::set<std::string>& tags) {
 }
 }  // namespace
 
+// 描述一次 AI 流消息的核心字段：消息类型、文本、响应 key、错误及是否最终片段。
 struct AiAssistantTranslator::AiStreamData {
   std::string message_type;
   std::string content;
@@ -64,6 +79,7 @@ struct AiAssistantTranslator::AiStreamData {
   bool has_error = false;
 };
 
+// 读取 AI 流的结果：包含状态（无数据/超时/成功/错误）、解析后的数据、原始报文等。
 struct AiAssistantTranslator::AiStreamResult {
   enum class Status {
     kNoData,
@@ -84,12 +100,15 @@ struct AiAssistantTranslator::AiStreamResult {
 
 AiAssistantTranslator::AiAssistantTranslator(const Ticket& ticket)
     : Translator(ticket),
-      logger_(MakeLogger("ai_assistant_translator_cpp")) {
+      logger_(MakeLogger("ai_assistant_translator")) {
   AIPARA_LOG_INFO(logger_, "AiAssistantTranslator initialized.");
 }
 
+// Query：Rime 会针对每个 segment 调用本函数询问“你能提供候选吗”。
+// 根据 segment.tags 决定走哪个子处理函数；若不处理返回 nullptr。
 an<Translation> AiAssistantTranslator::Query(const string& input,
                                              const Segment& segment) {
+// Query是默认的调用函数, 这里确认已经正确的获取到input和segment
   AIPARA_LOG_INFO(logger_, "Translator query invoked. input='" + input +
                                 "' tags=" + TagsToString(segment.tags));
 
@@ -98,18 +117,24 @@ an<Translation> AiAssistantTranslator::Query(const string& input,
     return nullptr;
   }
 
+  // 获取 Rime 上下文，用于访问全局状态（如选项、选项值、选项变更记录等）。
   Context* context = engine_->context();
   if (!context) {
     AIPARA_LOG_WARN(logger_, "Engine context unavailable.");
     return nullptr;
   }
 
+  // 如果 segment 包含 clear_chat_history 标签，调用 HandleClearHistorySegment函数
+  // 清空历史并返回 nullptr。
   if (segment.HasTag("clear_chat_history")) {
     return HandleClearHistorySegment(segment);
   }
+  // 如果 segment 包含 ai_talk 标签，调用 HandleAiTalkSegment 处理 AI 对话。
   if (segment.HasTag("ai_talk")) {
+    AIPARA_LOG_WARN(logger_, "进入ai_talk标签分支");
     return HandleAiTalkSegment(input, segment, context);
   }
+  // 如果 segment 包含 ai_reply 标签，发起 AI 回复并返回 nullptr。
   if (segment.HasTag("ai_reply")) {
     return HandleAiReplySegment(input, segment, context);
   }
@@ -117,6 +142,9 @@ an<Translation> AiAssistantTranslator::Query(const string& input,
   return nullptr;
 }
 
+// 从 Rime 配置加载 ai_assistant/ai_prompts 下的各项设置：
+// - chat_triggers：触发词；reply_messages_preedits：预编辑展示；chat_names：显示名称。
+// 读取后填充到本类的哈希表缓存。
 void AiAssistantTranslator::UpdateCurrentConfig(Config* config) {
   chat_triggers_.clear();
   reply_messages_preedits_.clear();
@@ -176,12 +204,15 @@ void AiAssistantTranslator::UpdateCurrentConfig(Config* config) {
   }
 }
 
+// 绑定/解绑 TCP 同步器。
 void AiAssistantTranslator::AttachTcpSocketSync(TcpSocketSync* sync) {
   tcp_socket_sync_ = sync;
   AIPARA_LOG_INFO(logger_, sync ? "TcpSocketSync attached."
                                 : "TcpSocketSync detached.");
 }
 
+// 处理带有 ai_talk 标签的分段：根据当前上下文中设置的 current_ai_context
+// 决定触发器，并生成一个展示候选（一般用于“进入某聊天上下文”的提示）。
 an<Translation> AiAssistantTranslator::HandleAiTalkSegment(
     const string& /*input*/,
     const Segment& segment,
@@ -191,7 +222,7 @@ an<Translation> AiAssistantTranslator::HandleAiTalkSegment(
   }
   const std::string trigger_name =
       context->get_property("current_ai_context");
-  AIPARA_LOG_INFO(logger_, "Handling ai_talk segment. trigger='" +
+  AIPARA_LOG_INFO(logger_, "获取到 current_ai_context: trigger_name='" +
                                trigger_name + "'");
 
   if (trigger_name.empty()) {
@@ -202,7 +233,7 @@ an<Translation> AiAssistantTranslator::HandleAiTalkSegment(
   auto trigger_it = chat_triggers_.find(trigger_name);
   if (trigger_it == chat_triggers_.end()) {
     AIPARA_LOG_WARN(logger_,
-                    "Trigger not found in configuration: " + trigger_name);
+                    "trigger_name 在配置中没有找到: " + trigger_name);
     return nullptr;
   }
 
@@ -225,6 +256,7 @@ an<Translation> AiAssistantTranslator::HandleAiTalkSegment(
   return MakeSingleCandidateTranslation(candidate);
 }
 
+// 生成“清空对话记录”的候选，不涉及 socket 通信。
 an<Translation> AiAssistantTranslator::HandleClearHistorySegment(
     const Segment& segment) {
   auto candidate = MakeCandidate("clear_chat_history", segment.start,
@@ -236,6 +268,9 @@ an<Translation> AiAssistantTranslator::HandleClearHistorySegment(
   return MakeSingleCandidateTranslation(candidate);
 }
 
+// 处理 ai_reply 标签：轮询 socket 读增量消息，解析 JSON，把内容写入上下文属性
+// （ai_replay_stream），控制 get_ai_stream 的状态机（start/stop/idle），
+// 并以当前缓存的内容构造候选显示给用户。
 an<Translation> AiAssistantTranslator::HandleAiReplySegment(
     const string& /*input*/,
     const Segment& segment,
@@ -346,6 +381,8 @@ an<Translation> AiAssistantTranslator::HandleAiReplySegment(
   return MakeSingleCandidateTranslation(candidate);
 }
 
+// 从 TcpSocketSync 非阻塞读取最近一条 AI 消息，设置超时；
+// 使用 RapidJSON 解析，兼容不同字段位置（data 包裹或直接在根对象）。
 AiAssistantTranslator::AiStreamResult
 AiAssistantTranslator::ReadLatestAiStream() {
   AiStreamResult result;
@@ -435,6 +472,7 @@ AiAssistantTranslator::ReadLatestAiStream() {
   return result;
 }
 
+// 构建 Rime 的 SimpleCandidate，并设置质量与预编辑文本。
 an<Candidate> AiAssistantTranslator::MakeCandidate(
     const std::string& type,
     size_t start,
@@ -454,6 +492,7 @@ an<Candidate> AiAssistantTranslator::MakeCandidate(
   return candidate;
 }
 
+// 把单个候选写入一个 FIFO 翻译流中返回。
 an<Translation> AiAssistantTranslator::MakeSingleCandidateTranslation(
     an<Candidate> candidate) const {
   if (!candidate) {
