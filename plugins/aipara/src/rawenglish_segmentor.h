@@ -6,6 +6,8 @@
 
 #include <string>
 
+#include "common/logger.h"
+
 namespace rime {
 class Config;
 class Segmentation;
@@ -15,7 +17,7 @@ namespace rime::aipara {
 
 class RawEnglishSegmentor : public Segmentor {
  public:
-  explicit RawEnglishSegmentor(const Ticket& ticket);
+ explicit RawEnglishSegmentor(const Ticket& ticket);
 
   bool Proceed(Segmentation* segmentation) override;
 
@@ -23,6 +25,7 @@ class RawEnglishSegmentor : public Segmentor {
 
  private:
   std::string english_mode_symbol_ = "`";
+  Logger logger_;
 };
 
 }  // namespace rime::aipara

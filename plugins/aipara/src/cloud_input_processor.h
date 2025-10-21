@@ -15,7 +15,7 @@ class Schema;
 
 namespace rime::aipara {
 
-class TcpSocketSync;
+class TcpZmq;
 
 struct AiAssistantBehavior {
   bool commit_question = false;
@@ -48,7 +48,7 @@ class CloudInputProcessor : public Processor {
   void UpdateProperty(const std::string& property_name,
                       const std::string& property_value);
 
-  void AttachTcpSocketSync(TcpSocketSync* sync);
+  void AttachTcpZmq(TcpZmq* client);
 
  private:
   void EnsureConfigLoaded(const Schema* schema);
@@ -65,7 +65,7 @@ class CloudInputProcessor : public Processor {
   std::string last_schema_id_;
   bool config_initialized_ = false;
 
-  TcpSocketSync* tcp_socket_sync_ = nullptr;
+  TcpZmq* tcp_zmq_ = nullptr;
 };
 
 }  // namespace rime::aipara

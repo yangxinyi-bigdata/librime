@@ -5,7 +5,7 @@
 #include <rime/key_event.h>
 #include <rime/schema.h>
 
-#include "common/tcp_socket_sync.h"
+#include "common/tcp_zmq.h"
 
 namespace rime::aipara {
 
@@ -62,11 +62,11 @@ void CloudInputProcessor::UpdateCurrentConfig(Config* config) {
 
 void CloudInputProcessor::UpdateProperty(const std::string&,
                                          const std::string&) {
-  // TODO: update context properties received from tcp_socket_sync.
+  // TODO: update context properties received from tcp_zmq.
 }
 
-void CloudInputProcessor::AttachTcpSocketSync(TcpSocketSync* sync) {
-  tcp_socket_sync_ = sync;
+void CloudInputProcessor::AttachTcpZmq(TcpZmq* client) {
+  tcp_zmq_ = client;
 }
 
 void CloudInputProcessor::EnsureConfigLoaded(const Schema* schema) {

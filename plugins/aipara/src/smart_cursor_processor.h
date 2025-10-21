@@ -29,7 +29,7 @@ class Segment;
 
 namespace rime::aipara {
 
-class TcpSocketSync;
+class TcpZmq;
 
 class SmartCursorProcessor : public Processor {
  public:
@@ -39,7 +39,7 @@ class SmartCursorProcessor : public Processor {
   ProcessResult ProcessKeyEvent(const KeyEvent& key_event) override;
 
   void UpdateCurrentConfig(Config* config);
-  void AttachTcpSocketSync(TcpSocketSync* sync);
+  void AttachTcpZmq(TcpZmq* client);
 
  private:
   // 将本类的回调函数挂接到给定 Context 的各类事件（选中/提交/更新/属性更新/未处理键）。
@@ -86,12 +86,12 @@ class SmartCursorProcessor : public Processor {
   std::unordered_map<std::string, std::string> LoadChatTriggers(
       Config* config) const;
 
-  // 将上下文/配置同步到外部服务端（通过 TcpSocketSync）。
+  // 将上下文/配置同步到外部服务端（通过 TcpZmq）。
   void SyncWithServer(Context* context, bool include_config = false) const;
 
   // 成员字段：
   Logger logger_;
-  TcpSocketSync* tcp_socket_sync_ = nullptr;
+  TcpZmq* tcp_zmq_ = nullptr;
 
   // 快速判定是否为标点字符的集合（ASCII）。
   std::unordered_set<char> punctuation_chars_;

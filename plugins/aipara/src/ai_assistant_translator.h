@@ -26,7 +26,7 @@ struct Segment;
 
 namespace rime::aipara {
 
-class TcpSocketSync;
+class TcpZmq;
 
 class AiAssistantTranslator : public Translator {
  public:
@@ -42,8 +42,8 @@ class AiAssistantTranslator : public Translator {
 
   // 从 Rime Config 更新触发词、预编辑文本等配置信息。
   void UpdateCurrentConfig(Config* config);
-  // 注入用于与外部服务同步的 TCP 同步器。
-  void AttachTcpSocketSync(TcpSocketSync* sync);
+  // 注入用于与外部服务同步的 ZeroMQ 客户端。
+  void AttachTcpZmq(TcpZmq* client);
 
  private:
   // 内部数据结构：描述 AI 流的单个数据片段与汇总结果。
@@ -86,9 +86,9 @@ class AiAssistantTranslator : public Translator {
   std::unordered_map<std::string, std::string> chat_names_;
   std::unordered_map<std::string, std::string> reply_input_to_trigger_;
 
-  // 指向 TCP 同步器的裸指针：由外部管理生命周期，此类只“借用”使用。
+  // 指向 ZeroMQ 客户端的裸指针：由外部管理生命周期，此类只“借用”使用。
   // 新手注意：裸指针可能为 nullptr，使用前必须判空；不负责 delete。
-  TcpSocketSync* tcp_socket_sync_ = nullptr;
+  TcpZmq* tcp_zmq_ = nullptr;
   // 日志器：用于打印调试/信息/错误日志。
   Logger logger_;
 };

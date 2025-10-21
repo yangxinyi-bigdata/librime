@@ -23,7 +23,7 @@
 
 #include "common/spans_manager.h"
 #include "common/text_formatting.h"
-#include "common/tcp_socket_sync.h"
+#include "common/tcp_zmq.h"
 
 namespace rime::aipara {
 
@@ -77,9 +77,9 @@ SmartCursorProcessor::~SmartCursorProcessor() {
   DisconnectAll();
 }
 
-void SmartCursorProcessor::AttachTcpSocketSync(TcpSocketSync* sync) {
-  tcp_socket_sync_ = sync;
-  if (engine_ && engine_->context() && tcp_socket_sync_) {
+void SmartCursorProcessor::AttachTcpZmq(TcpZmq* client) {
+  tcp_zmq_ = client;
+  if (engine_ && engine_->context() && tcp_zmq_) {
     ApplyGlobalOptions(engine_->context());
   }
 }
@@ -219,8 +219,8 @@ ProcessResult SmartCursorProcessor::ProcessKeyEvent(
   }
 
   if (!paste_to_input.empty() && key_repr == paste_to_input) {
-    if (tcp_socket_sync_) {
-      tcp_socket_sync_->UpdateProperty("command", "get_clipboard");
+    if (tcp_zmq_) {
+      tcp_zmq_->UpdateProperty("command", "get_clipboard");
       SyncWithServer(context, true);
     }
     return kAccepted;
@@ -266,13 +266,13 @@ void SmartCursorProcessor::OnCommit(Context* context) {
   }
 
   context->set_property("input_string", "");
-  if (!tcp_socket_sync_) {
+  if (!tcp_zmq_) {
     return;
   }
 
   const std::string send_key = context->get_property("send_key");
   if (!send_key.empty()) {
-    tcp_socket_sync_->UpdateProperty("send_key", send_key);
+    tcp_zmq_->UpdateProperty("send_key", send_key);
     context->set_property("send_key", "");
   }
 
@@ -407,8 +407,8 @@ void SmartCursorProcessor::OnUnhandledKey(Context* context,
   const std::string key_repr = key_event.repr();
   const auto& send_chars = text_formatting::handle_keys();
   auto it = send_chars.find(key_repr);
-  if (it != send_chars.end() && tcp_socket_sync_) {
-    tcp_socket_sync_->UpdateProperty("last_unhandled_char", it->second);
+  if (it != send_chars.end() && tcp_zmq_) {
+    tcp_zmq_->UpdateProperty("last_unhandled_char", it->second);
   }
 }
 
@@ -588,12 +588,12 @@ bool SmartCursorProcessor::MoveBySpans(Context* context, bool move_next) {
   return true;
 }
 
-// 应用全局开关至上下文（通过 TcpSocketSync）。
+// 应用全局开关至上下文（通过 TcpZmq）。
 void SmartCursorProcessor::ApplyGlobalOptions(Context* context) {
-  if (!tcp_socket_sync_ || !context) {
+  if (!tcp_zmq_ || !context) {
     return;
   }
-  const int applied = tcp_socket_sync_->ApplyGlobalOptionsToContext(context);
+  const int applied = tcp_zmq_->ApplyGlobalOptionsToContext(context);
   if (applied > 0) {
     AIPARA_LOG_INFO(
         logger_, "应用全局开关数量: " + std::to_string(applied));
@@ -763,16 +763,12 @@ SmartCursorProcessor::LoadChatTriggers(Config* config) const {
 // 同步到服务端：可选是否包含配置。
 void SmartCursorProcessor::SyncWithServer(Context* context,
                                           bool include_config) const {
-  if (!tcp_socket_sync_) {
+  (void)context;
+  if (!tcp_zmq_ || !engine_) {
     return;
   }
-  if (include_config) {
-    tcp_socket_sync_->SyncWithServer(context, CurrentConfig());
-  } else if (context) {
-    tcp_socket_sync_->SyncWithServer(context);
-  } else {
-    tcp_socket_sync_->SyncWithServer();
-  }
+  const bool include_options = include_config;
+  tcp_zmq_->SyncWithServer(engine_, include_options);
 }
 
 }  // namespace rime::aipara

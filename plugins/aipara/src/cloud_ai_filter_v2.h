@@ -15,7 +15,7 @@ class Config;
 
 namespace rime::aipara {
 
-class TcpSocketSync;
+class TcpZmq;
 
 struct CloudAiBehavior {
   std::string prompt_chat;
@@ -37,7 +37,7 @@ class CloudAiFilterV2 : public Filter {
                         CandidateList* candidates) override;
 
   void UpdateCurrentConfig(Config* config);
-  void AttachTcpSocketSync(TcpSocketSync* sync);
+  void AttachTcpZmq(TcpZmq* client);
 
  private:
   CloudAiBehavior behavior_;
@@ -53,7 +53,7 @@ class CloudAiFilterV2 : public Filter {
   std::string rawenglish_delimiter_after_;
 
   CloudResultCache cache_;
-  TcpSocketSync* tcp_socket_sync_ = nullptr;
+  TcpZmq* tcp_zmq_ = nullptr;
 };
 
 }  // namespace rime::aipara

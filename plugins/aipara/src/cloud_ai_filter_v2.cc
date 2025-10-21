@@ -3,7 +3,7 @@
 #include <rime/config.h>
 #include <rime/translation.h>
 
-#include "common/tcp_socket_sync.h"
+#include "common/tcp_zmq.h"
 
 namespace rime::aipara {
 
@@ -51,8 +51,8 @@ void CloudAiFilterV2::UpdateCurrentConfig(Config* config) {
   cache_.timestamp = 0.0;
 }
 
-void CloudAiFilterV2::AttachTcpSocketSync(TcpSocketSync* sync) {
-  tcp_socket_sync_ = sync;
+void CloudAiFilterV2::AttachTcpZmq(TcpZmq* client) {
+  tcp_zmq_ = client;
 }
 
 }  // namespace rime::aipara

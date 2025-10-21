@@ -1,5 +1,5 @@
 // 实现 AiAssistantTranslator：把 Rime 的查询请求（Query）根据标签路由到
-// 不同的处理逻辑（清空历史/AI 对话/AI 回复），并通过 TcpSocketSync 轮询
+// 不同的处理逻辑（清空历史/AI 对话/AI 回复），并通过 TcpZmq 轮询
 // 外部服务的增量消息，解析 JSON，更新上下文，生成候选。
 #include "ai_assistant_translator.h"
 
@@ -10,7 +10,6 @@
 #include <rime/translation.h>
 
 #include <algorithm>
-#include <optional>
 #include <set>
 #include <utility>
 #include <string_view>
@@ -30,7 +29,7 @@
 #include <rapidjson/document.h>
 #include <rapidjson/error/en.h>
 // 可以考虑先搞一个简单白本,不用tcp协议,就可以更加简单的测试了
-#include "common/tcp_socket_sync.h"
+#include "common/tcp_zmq.h"
 
 namespace rime::aipara {
 
@@ -205,10 +204,10 @@ void AiAssistantTranslator::UpdateCurrentConfig(Config* config) {
 }
 
 // 绑定/解绑 TCP 同步器。
-void AiAssistantTranslator::AttachTcpSocketSync(TcpSocketSync* sync) {
-  tcp_socket_sync_ = sync;
-  AIPARA_LOG_INFO(logger_, sync ? "TcpSocketSync attached."
-                                : "TcpSocketSync detached.");
+void AiAssistantTranslator::AttachTcpZmq(TcpZmq* client) {
+  tcp_zmq_ = client;
+  AIPARA_LOG_INFO(logger_, client ? "TcpZmq attached."
+                                  : "TcpZmq detached.");
 }
 
 // 处理带有 ai_talk 标签的分段：根据当前上下文中设置的 current_ai_context
@@ -252,7 +251,7 @@ an<Translation> AiAssistantTranslator::HandleAiTalkSegment(
   }
 
   AIPARA_LOG_INFO(logger_,
-                  "Generated ai_talk candidate: " + display_text);
+                  "生成 ai_talk 候选词: " + display_text);
   return MakeSingleCandidateTranslation(candidate);
 }
 
@@ -381,25 +380,37 @@ an<Translation> AiAssistantTranslator::HandleAiReplySegment(
   return MakeSingleCandidateTranslation(candidate);
 }
 
-// 从 TcpSocketSync 非阻塞读取最近一条 AI 消息，设置超时；
+// 从 TcpZmq 非阻塞读取最近一条 AI 消息，设置超时；
 // 使用 RapidJSON 解析，兼容不同字段位置（data 包裹或直接在根对象）。
 AiAssistantTranslator::AiStreamResult
 AiAssistantTranslator::ReadLatestAiStream() {
   AiStreamResult result;
-  if (!tcp_socket_sync_) {
+  if (!tcp_zmq_) {
     result.status = AiStreamResult::Status::kError;
-    result.error_message = "TcpSocketSync not attached.";
+    result.error_message = "TcpZmq not attached.";
     return result;
   }
 
-  const std::optional<std::string> raw =
-      tcp_socket_sync_->ReadLatestAiMessage(kAiSocketTimeoutSeconds);
-  if (!raw.has_value()) {
-    result.status = AiStreamResult::Status::kTimeout;
-    return result;
+  const TcpZmq::LatestAiMessage latest =
+      tcp_zmq_->ReadLatestFromAiSocket(kAiSocketTimeoutSeconds);
+
+  switch (latest.status) {
+    case TcpZmq::LatestStatus::kSuccess:
+      break;
+    case TcpZmq::LatestStatus::kTimeout:
+      result.status = AiStreamResult::Status::kTimeout;
+      return result;
+    case TcpZmq::LatestStatus::kNoData:
+      result.status = AiStreamResult::Status::kNoData;
+      return result;
+    case TcpZmq::LatestStatus::kError:
+      result.status = AiStreamResult::Status::kError;
+      result.error_message =
+          latest.error_msg.value_or("TcpZmq read error.");
+      return result;
   }
 
-  result.raw_message = *raw;
+  result.raw_message = latest.raw_message;
   if (result.raw_message.empty()) {
     result.status = AiStreamResult::Status::kNoData;
     return result;
@@ -408,7 +419,7 @@ AiAssistantTranslator::ReadLatestAiStream() {
   AIPARA_LOG_DEBUG(logger_, "AI stream raw message: " + result.raw_message);
 
   rapidjson::Document doc;
-  if (doc.Parse(raw->c_str()).HasParseError()) {
+  if (doc.Parse(result.raw_message.c_str()).HasParseError()) {
     result.status = AiStreamResult::Status::kError;
     result.error_message = std::string("JSON parse error: ") +
                            rapidjson::GetParseError_En(
