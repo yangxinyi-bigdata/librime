@@ -89,7 +89,7 @@ class Logger {
     std::string timestamp_format = "%Y-%m-%d %H:%M:%S";
     bool unique_file_log = false;
     std::string unique_file_log_file = "all_modules.log";
-    bool console_output = false;
+    bool console_output = true;
     Level min_level = Level::kDebug;
     bool show_line_info = true;
   };

@@ -14,6 +14,34 @@
 
 #include <zmq.h>
 
+#ifdef Bool
+#pragma push_macro("Bool")
+#undef Bool
+#define RIME_TCPZMQ_BOOL_RESTORE
+#endif
+#ifdef True
+#pragma push_macro("True")
+#undef True
+#define RIME_TCPZMQ_TRUE_RESTORE
+#endif
+#ifdef False
+#pragma push_macro("False")
+#undef False
+#define RIME_TCPZMQ_FALSE_RESTORE
+#endif
+#include <rapidjson/document.h>
+#ifdef RIME_TCPZMQ_FALSE_RESTORE
+#pragma pop_macro("False")
+#undef RIME_TCPZMQ_FALSE_RESTORE
+#endif
+#ifdef RIME_TCPZMQ_TRUE_RESTORE
+#pragma pop_macro("True")
+#undef RIME_TCPZMQ_TRUE_RESTORE
+#endif
+#ifdef RIME_TCPZMQ_BOOL_RESTORE
+#pragma pop_macro("Bool")
+#undef RIME_TCPZMQ_BOOL_RESTORE
+#endif
 #include <rapidjson/error/en.h>
 #include <rapidjson/stringbuffer.h>
 #include <rapidjson/writer.h>

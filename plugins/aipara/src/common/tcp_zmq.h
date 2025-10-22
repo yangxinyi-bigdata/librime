@@ -9,7 +9,34 @@
 #include <unordered_map>
 #include <vector>
 
+#ifdef Bool
+#pragma push_macro("Bool")
+#undef Bool
+#define RIME_BOOL_MACRO_RESTORE
+#endif
+#ifdef True
+#pragma push_macro("True")
+#undef True
+#define RIME_TRUE_MACRO_RESTORE
+#endif
+#ifdef False
+#pragma push_macro("False")
+#undef False
+#define RIME_FALSE_MACRO_RESTORE
+#endif
 #include <rapidjson/document.h>
+#ifdef RIME_FALSE_MACRO_RESTORE
+#pragma pop_macro("False")
+#undef RIME_FALSE_MACRO_RESTORE
+#endif
+#ifdef RIME_TRUE_MACRO_RESTORE
+#pragma pop_macro("True")
+#undef RIME_TRUE_MACRO_RESTORE
+#endif
+#ifdef RIME_BOOL_MACRO_RESTORE
+#pragma pop_macro("Bool")
+#undef RIME_BOOL_MACRO_RESTORE
+#endif
 
 #include "logger.h"
 

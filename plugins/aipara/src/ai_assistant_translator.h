@@ -14,7 +14,6 @@
 #include <rime/translator.h>
 
 #include <string>
-#include <unordered_map>
 #include "common/logger.h"
 
 namespace rime {
@@ -40,7 +39,7 @@ class AiAssistantTranslator : public Translator {
   an<Translation> Query(const string& input,
                         const Segment& segment) override;
 
-  // 从 Rime Config 更新触发词、预编辑文本等配置信息。
+  // 保留接口以兼容框架，当前实现为轻量级无操作。
   void UpdateCurrentConfig(Config* config);
   // 注入用于与外部服务同步的 ZeroMQ 客户端。
   void AttachTcpZmq(TcpZmq* client);
@@ -76,15 +75,9 @@ class AiAssistantTranslator : public Translator {
                               const std::string& preedit = {},
                               double quality = 1000.0) const;
 
-  // 配置缓存：
-  // - chat_triggers_：触发“对话”的前缀（例如“/ai”）。
-  // - reply_messages_preedits_：回复候选的预览文本。
-  // - chat_names_：聊天场景展示名。
-  // - reply_input_to_trigger_：从预编辑文本反查触发器。
-  std::unordered_map<std::string, std::string> chat_triggers_;
-  std::unordered_map<std::string, std::string> reply_messages_preedits_;
-  std::unordered_map<std::string, std::string> chat_names_;
-  std::unordered_map<std::string, std::string> reply_input_to_trigger_;
+  Config* ResolveConfig() const;
+  std::string BuildPromptPath(const std::string& prompt,
+                              const std::string& leaf) const;
 
   // 指向 ZeroMQ 客户端的裸指针：由外部管理生命周期，此类只“借用”使用。
   // 新手注意：裸指针可能为 nullptr，使用前必须判空；不负责 delete。

@@ -8,6 +8,7 @@
 #include <rime/context.h>
 #include <rime/engine.h>
 #include <rime/translation.h>
+#include <rime/schema.h>
 
 #include <algorithm>
 #include <set>
@@ -141,66 +142,16 @@ an<Translation> AiAssistantTranslator::Query(const string& input,
   return nullptr;
 }
 
-// 从 Rime 配置加载 ai_assistant/ai_prompts 下的各项设置：
-// - chat_triggers：触发词；reply_messages_preedits：预编辑展示；chat_names：显示名称。
-// 读取后填充到本类的哈希表缓存。
 void AiAssistantTranslator::UpdateCurrentConfig(Config* config) {
-  chat_triggers_.clear();
-  reply_messages_preedits_.clear();
-  chat_names_.clear();
-  reply_input_to_trigger_.clear();
-
   if (!config) {
-    AIPARA_LOG_WARN(logger_, "UpdateCurrentConfig called with null config.");
+    AIPARA_LOG_WARN(logger_,
+                    "UpdateCurrentConfig called with null config. "
+                    "Configuration is now read lazily.");
     return;
   }
-
-  if (an<ConfigMap> prompts = config->GetMap("ai_assistant/ai_prompts")) {
-    int entry_count = 0;
-    for (auto it = prompts->begin(); it != prompts->end(); ++it) {
-      ++entry_count;
-    }
-    AIPARA_LOG_INFO(
-        logger_, "Loading ai_assistant/ai_prompts, entries=" +
-                     std::to_string(entry_count));
-    for (auto it = prompts->begin(); it != prompts->end(); ++it) {
-      const std::string& trigger_name = it->first;
-      const std::string base_path =
-          "ai_assistant/ai_prompts/" + trigger_name;
-
-      std::string trigger_value;
-      if (config->GetString(base_path + "/chat_triggers", &trigger_value) &&
-          !trigger_value.empty()) {
-        chat_triggers_[trigger_name] = trigger_value;
-        AIPARA_LOG_INFO(logger_, "Configured chat trigger '" + trigger_name +
-                                     "' -> '" + trigger_value + "'");
-      }
-
-      std::string reply_message_preedit;
-      if (config->GetString(base_path + "/reply_messages_preedits",
-                            &reply_message_preedit) &&
-          !reply_message_preedit.empty()) {
-        reply_messages_preedits_[trigger_name] = reply_message_preedit;
-        AIPARA_LOG_INFO(logger_,
-                        "Configured reply preedit for '" + trigger_name + "'");
-      }
-
-      std::string chat_name;
-      if (config->GetString(base_path + "/chat_names", &chat_name) &&
-          !chat_name.empty()) {
-        chat_names_[trigger_name] = chat_name;
-        AIPARA_LOG_INFO(logger_,
-                        "Configured chat name for '" + trigger_name + "'");
-      }
-    }
-  } else {
-    AIPARA_LOG_WARN(logger_, "No ai_assistant/ai_prompts map available.");
-  }
-
-  reply_input_to_trigger_.clear();
-  for (const auto& entry : reply_messages_preedits_) {
-    reply_input_to_trigger_[entry.second] = entry.first;
-  }
+  AIPARA_LOG_INFO(logger_,
+                  "UpdateCurrentConfig invoked; ai_assistant_translator "
+                  "reads configuration directly on demand.");
 }
 
 // 绑定/解绑 TCP 同步器。
@@ -229,20 +180,32 @@ an<Translation> AiAssistantTranslator::HandleAiTalkSegment(
     return nullptr;
   }
 
-  auto trigger_it = chat_triggers_.find(trigger_name);
-  if (trigger_it == chat_triggers_.end()) {
+  Config* config = ResolveConfig();
+  if (!config) {
+    AIPARA_LOG_WARN(logger_,
+                    "No schema config available while handling ai_talk.");
+    return nullptr;
+  }
+
+  const std::string base_path =
+      BuildPromptPath(trigger_name, "chat_triggers");
+  std::string trigger_value;
+  if (!config->GetString(base_path, &trigger_value) ||
+      trigger_value.empty()) {
     AIPARA_LOG_WARN(logger_,
                     "trigger_name 在配置中没有找到: " + trigger_name);
     return nullptr;
   }
 
-  const std::string display_text = [this, &trigger_name, &trigger_it]() {
-    auto name_it = chat_names_.find(trigger_name);
-    if (name_it != chat_names_.end() && !name_it->second.empty()) {
-      return name_it->second;
-    }
-    return trigger_it->second + " AI助手";
-  }();
+  std::string display_text;
+  std::string chat_name;
+  if (config->GetString(
+          BuildPromptPath(trigger_name, "chat_names"), &chat_name) &&
+      !chat_name.empty()) {
+    display_text = chat_name;
+  } else {
+    display_text = trigger_value + " AI助手";
+  }
 
   auto candidate =
       MakeCandidate(trigger_name, segment.start, segment.end, display_text);
@@ -297,10 +260,15 @@ an<Translation> AiAssistantTranslator::HandleAiReplySegment(
 
   const std::string trigger_name =
       RemoveSuffix(reply_tag, "_reply");
-  const auto preedit_it =
-      reply_messages_preedits_.find(trigger_name);
-  const std::string preedit =
-      preedit_it != reply_messages_preedits_.end() ? preedit_it->second : "";
+  std::string preedit;
+  if (Config* config = ResolveConfig()) {
+    config->GetString(
+        BuildPromptPath(trigger_name, "reply_messages_preedits"),
+        &preedit);
+  } else {
+    AIPARA_LOG_WARN(logger_,
+                    "No schema config available while resolving AI reply preedit.");
+  }
 
   const std::string stream_state =
       context->get_property("get_ai_stream");
@@ -378,6 +346,25 @@ an<Translation> AiAssistantTranslator::HandleAiReplySegment(
   AIPARA_LOG_INFO(logger_, "Generated ai_reply candidate text length=" +
                                std::to_string(current_content.size()));
   return MakeSingleCandidateTranslation(candidate);
+}
+
+Config* AiAssistantTranslator::ResolveConfig() const {
+  if (!engine_) {
+    return nullptr;
+  }
+  if (auto* schema = engine_->schema()) {
+    return schema->config();
+  }
+  return nullptr;
+}
+
+std::string AiAssistantTranslator::BuildPromptPath(
+    const std::string& prompt,
+    const std::string& leaf) const {
+  if (leaf.empty()) {
+    return "ai_assistant/ai_prompts/" + prompt;
+  }
+  return "ai_assistant/ai_prompts/" + prompt + "/" + leaf;
 }
 
 // 从 TcpZmq 非阻塞读取最近一条 AI 消息，设置超时；

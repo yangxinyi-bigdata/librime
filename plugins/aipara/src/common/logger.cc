@@ -53,6 +53,9 @@ Logger Logger::Create(const std::string& module_name,
     config.unique_file_log_file = global_unique_filename_;
   }
 
+  // Force console mirroring so every log line also appears in the terminal.
+  config.console_output = true;
+
   std::filesystem::path log_file = ResolveLogFilePath(module_name, config);
   return Logger(module_name, config, log_file);
 }

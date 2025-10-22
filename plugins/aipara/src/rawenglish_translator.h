@@ -3,6 +3,7 @@
 
 #include <rime/common.h>
 #include <rime/translator.h>
+#include <rime/gear/translator_commons.h>
 
 #include <string>
 #include <unordered_map>
@@ -13,7 +14,6 @@
 namespace rime {
 class Config;
 struct Segment;
-class Spans;
 }  // namespace rime
 
 namespace rime::aipara {
@@ -37,6 +37,7 @@ class RawEnglishTranslator : public Translator {
     std::size_t length = 0;
     std::string type;
   };
+  struct CandidateBatch;
 
   void EnsureConfigLoaded();
   void LoadConfig(Config* config);

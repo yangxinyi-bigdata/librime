@@ -21,6 +21,13 @@
 
 namespace rime::aipara {
 
+struct RawEnglishTranslator::CandidateBatch {
+  std::vector<CachedCandidate> candidates;
+  bool used_fallback = false;
+  std::size_t fallback_length_diff = 0;
+  std::size_t script_fail_length = 0;
+};
+
 namespace {
 
 constexpr std::size_t kMaxCandidatesPerSegment = 2;
@@ -86,13 +93,6 @@ std::vector<std::size_t> VerticesFromSpans(const Spans& spans) {
   return vertices;
 }
 
-struct CandidateBatch {
-  std::vector<RawEnglishTranslator::CachedCandidate> candidates;
-  bool used_fallback = false;
-  std::size_t fallback_length_diff = 0;
-  std::size_t script_fail_length = 0;
-};
-
 }  // namespace
 
 RawEnglishTranslator::RawEnglishTranslator(const Ticket& ticket)
@@ -117,7 +117,7 @@ void RawEnglishTranslator::EnsureTranslators() {
 
   if (!script_translator_) {
     Ticket script_ticket(engine_, "translator", "script_translator");
-    script_translator_ = component->Create(script_ticket);
+    script_translator_.reset(component->Create(script_ticket));
     if (script_translator_) {
       AIPARA_LOG_INFO(logger_, "script_translator initialized.");
     } else {
@@ -127,7 +127,7 @@ void RawEnglishTranslator::EnsureTranslators() {
 
   if (!user_dict_set_translator_) {
     Ticket user_ticket(engine_, "user_dict_set", "script_translator");
-    user_dict_set_translator_ = component->Create(user_ticket);
+    user_dict_set_translator_.reset(component->Create(user_ticket));
     if (user_dict_set_translator_) {
       AIPARA_LOG_INFO(logger_,
                       "user_dict_set script_translator initialized.");
