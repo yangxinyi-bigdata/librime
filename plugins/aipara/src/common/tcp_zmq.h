@@ -105,6 +105,8 @@ class TcpZmq {
   TcpZmq(const TcpZmq&) = delete;
   TcpZmq& operator=(const TcpZmq&) = delete;
 
+  static TcpZmq& Instance();
+
   void SetGlobalOption(const std::string& name, bool value);
   int ApplyGlobalOptionsToContext(rime::Context* context);
 

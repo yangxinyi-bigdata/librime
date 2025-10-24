@@ -58,7 +58,12 @@ SmartCursorProcessor::SmartCursorProcessor(const Ticket& ticket)
       logger_(MakeLogger("smart_cursor_processor")) {
   // 清空历史日志（若 Logger 支持该语义）。
   logger_.Clear();
-  AIPARA_LOG_INFO(logger_, "SmartCursorProcessor initialized.");
+  AIPARA_LOG_DEBUG(logger_, "SmartCursorProcessor initialized.");
+
+  // 确保 TcpZmq 在插件首次执行时完成初始化。
+  TcpZmq& tcp_client = TcpZmq::Instance();
+  tcp_client.Init();
+  AttachTcpZmq(&tcp_client);
 
   // 初始化“ASCII 标点集合”，用于快速跳转。
   const std::string punctuation_chars = ",.!?;:()[]<>/_=+*&^%$#@~|-'\"";
@@ -126,16 +131,11 @@ void SmartCursorProcessor::InitializeContextHooks(Context* context) {
             OnPropertyUpdate(ctx, property);
           });
 
-  unhandled_key_connection_ =
-      context->unhandled_key_notifier().connect(
-          [this](Context* ctx, const KeyEvent& key_event) {
-            OnUnhandledKey(ctx, key_event);
-          });
-}
-
-// 配置变更时重置 composing 状态缓存，避免干扰后续逻辑。
-void SmartCursorProcessor::UpdateCurrentConfig(Config*) {
-  previous_is_composing_.reset();
+  // unhandled_key_connection_ =
+  //     context->unhandled_key_notifier().connect(
+  //         [this](Context* ctx, const KeyEvent& key_event) {
+  //           OnUnhandledKey(ctx, key_event);
+  //         });
 }
 
 ProcessResult SmartCursorProcessor::ProcessKeyEvent(
@@ -156,8 +156,10 @@ ProcessResult SmartCursorProcessor::ProcessKeyEvent(
   Config* config = CurrentConfig();
   const std::string key_repr = key_event.repr();
 
+  AIPARA_LOG_DEBUG(logger_, "key_repr: " + key_repr);
   const std::string current_app = context->get_property("client_app");
   if (!current_app.empty() && config) {
+    AIPARA_LOG_DEBUG(logger_, "UpdateAsciiModeFromVimState.");
     UpdateAsciiModeFromVimState(current_app, context, config);
   }
 
@@ -272,6 +274,7 @@ void SmartCursorProcessor::OnCommit(Context* context) {
 
   const std::string send_key = context->get_property("send_key");
   if (!send_key.empty()) {
+    AIPARA_LOG_DEBUG(logger_, "OnCommit. send_key: " + send_key);
     tcp_zmq_->UpdateProperty("send_key", send_key);
     context->set_property("send_key", "");
   }
@@ -395,22 +398,18 @@ void SmartCursorProcessor::OnPropertyUpdate(Context* context,
 // 未处理按键：
 // - 与服务端同步；
 // - 若为可映射字符，则记录 last_unhandled_char。
-void SmartCursorProcessor::OnUnhandledKey(Context* context,
-                                          const KeyEvent& key_event) {
-  if (!context) {
-    return;
-  }
-
-  AIPARA_LOG_DEBUG(logger_, "unhandled_key_notifier触发： sync_with_server和服务端同步信息");
-  SyncWithServer(context, true);
-
-  const std::string key_repr = key_event.repr();
-  const auto& send_chars = text_formatting::handle_keys();
-  auto it = send_chars.find(key_repr);
-  if (it != send_chars.end() && tcp_zmq_) {
-    tcp_zmq_->UpdateProperty("last_unhandled_char", it->second);
-  }
+void SmartCursorProcessor::OnUnhandledKey(Context* context, const KeyEvent& key_event) {
 }
+// AIPARA_LOG_DEBUG(logger_, "unhandled_key_notifier触发:sync_with_server和服务端同步信息");
+  // SyncWithServer(context, true);
+
+  // const std::string key_repr = key_event.repr();
+  // const auto& send_chars = text_formatting::handle_keys();
+  // auto it = send_chars.find(key_repr);
+  // if (it != send_chars.end() && tcp_zmq_) {
+  //   tcp_zmq_->UpdateProperty("last_unhandled_char", it->second);
+  // }
+
 
 // 搜索移动模式：
 // - 接受 ASCII 字母/标点或 Tab；

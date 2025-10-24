@@ -23,6 +23,7 @@ constexpr std::string_view kDebug = "DEBUG";
 constexpr std::string_view kInfo = "INFO";
 constexpr std::string_view kWarn = "WARN";
 constexpr std::string_view kError = "ERROR";
+constexpr std::string_view kLoggerVersion = "v11";
 }  // namespace
 
 // 静态成员在类外初始化。互斥量（std::mutex）用于保护共享状态。
@@ -57,7 +58,11 @@ Logger Logger::Create(const std::string& module_name,
   config.console_output = true;
 
   std::filesystem::path log_file = ResolveLogFilePath(module_name, config);
-  return Logger(module_name, config, log_file);
+  Logger logger(module_name, config, log_file);
+  // 记录版本初始化信息，方便定位代码是否更新生效。
+  logger.Info(std::string("logger_init ") + module_name + "_" +
+              std::string(kLoggerVersion));
+  return logger;
 }
 
 void Logger::SetDefaultOptions(const Options& options) {
@@ -121,16 +126,21 @@ void Logger::Clear() const {
   if (!config_.enabled) {
     return;
   }
-  std::scoped_lock lock(io_mutex_);
-  // std::filesystem::create_directories 会按需创建目录，相当于 Python 的 os.makedirs(..., exist_ok=True)。
-  std::filesystem::create_directories(log_file_path_.parent_path());
-  // std::ofstream 的第二个参数 std::ios::trunc 表示“清空文件重新写”。
-  std::ofstream file(log_file_path_, std::ios::trunc);
-  if (!file) {
-    std::cerr << "Failed to clear log file: " << log_file_path_ << std::endl;
-    return;
+  {
+    std::scoped_lock lock(io_mutex_);
+    // std::filesystem::create_directories 会按需创建目录，相当于 Python 的 os.makedirs(..., exist_ok=True)。
+    std::filesystem::create_directories(log_file_path_.parent_path());
+    // std::ofstream 的第二个参数 std::ios::trunc 表示“清空文件重新写”。
+    std::ofstream file(log_file_path_, std::ios::trunc);
+    if (!file) {
+      std::cerr << "Failed to clear log file: " << log_file_path_ << std::endl;
+      return;
+    }
   }
   std::cout << "日志文件已清空: " << log_file_path_ << std::endl;
+  // 在清空文件后写入版本标记，确保最新日志可见。
+  Info(std::string("logger_init ") + module_name_ + "_" +
+       std::string(kLoggerVersion));
 }
 
 void Logger::Debug(const std::string& message,
