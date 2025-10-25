@@ -39,7 +39,6 @@ class SmartCursorProcessor : public Processor {
   ProcessResult ProcessKeyEvent(const KeyEvent& key_event) override;
 
   void UpdateCurrentConfig(Config* config);
-  void AttachTcpZmq(TcpZmq* client);
 
  private:
   // 将本类的回调函数挂接到给定 Context 的各类事件（选中/提交/更新/属性更新/未处理键）。
@@ -108,7 +107,7 @@ class SmartCursorProcessor : public Processor {
   connection update_connection_;
   connection extended_update_connection_;
   connection property_update_connection_;
-  connection unhandled_key_connection_;
+
 };
 
 }  // namespace rime::aipara

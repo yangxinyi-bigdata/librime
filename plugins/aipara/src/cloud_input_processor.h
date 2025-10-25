@@ -4,11 +4,18 @@
 #include <rime/common.h>
 #include <rime/processor.h>
 
+#include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+#include "common/logger.h"
 
 namespace rime {
 class Config;
+class Context;
 class KeyEvent;
 class Schema;
 }  // namespace rime
@@ -30,6 +37,8 @@ struct AiAssistantBehavior {
 
 struct AiAssistantConfig {
   bool enabled = false;
+  int page_size = 5;
+  std::string alternative_select_keys = "1234567890";
   AiAssistantBehavior behavior;
   std::unordered_map<std::string, std::string> chat_triggers;
   std::unordered_map<std::string, std::string> chat_names;
@@ -44,28 +53,47 @@ class CloudInputProcessor : public Processor {
 
   ProcessResult ProcessKeyEvent(const KeyEvent& key_event) override;
 
-  void UpdateCurrentConfig(Config* config);
   void UpdateProperty(const std::string& property_name,
                       const std::string& property_value);
 
   void AttachTcpZmq(TcpZmq* client);
 
  private:
-  void EnsureConfigLoaded(const Schema* schema);
-  void RefreshAiPrompts(Config* config);
+  void EnsureTcpClient();
 
-  std::string delimiter_;
-  std::string cloud_convert_symbol_;
-  std::string english_mode_symbol_;
-  std::string rawenglish_delimiter_after_;
-  std::string rawenglish_delimiter_before_;
+  void ApplyPendingProperties(rime::Context* context);
+  bool HandleShiftReleaseInterception(const std::string& key_repr,
+                                      rime::Context* context);
+  bool HandleAltF14(const std::string& key_repr,
+                    rime::Context* context,
+                    Config* config);
+  bool HandleAltF13(const std::string& key_repr, rime::Context* context);
+  ProcessResult HandleInterceptSelectKey(const std::string& key_repr,
+                                         rime::Context* context,
+                                         Config* config);
+  ProcessResult HandleAiTalkSelection(const std::string& key_repr,
+                                      rime::Context* context,
+                                      Config* config);
+  ProcessResult HandleRawEnglishInput(const KeyEvent& key_event,
+                                      const std::string& key_repr,
+                                      rime::Context* context);
+  ProcessResult HandleCloudConvertTrigger(const KeyEvent& key_event,
+                                          const std::string& key_repr,
+                                          rime::Context* context,
+                                          Config* config);
+  void SetCloudConvertFlag(rime::Context* context,
+                           Config* config) const;
+  ProcessResult HandleAiCandidateCommit(const std::string& key_repr,
+                                        const std::string& chat_trigger,
+                                        rime::Context* context,
+                                        Config* config);
 
-  AiAssistantConfig ai_assistant_config_;
-
-  std::string last_schema_id_;
-  bool config_initialized_ = false;
+  Logger logger_;
+  std::unordered_map<std::string, std::string> pending_property_updates_;
 
   TcpZmq* tcp_zmq_ = nullptr;
+
+  connection unhandled_key_connection_;
 };
 
 }  // namespace rime::aipara

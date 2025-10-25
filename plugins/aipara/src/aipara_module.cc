@@ -32,13 +32,12 @@ static void rime_aipara_initialize() {
              new Component<rime::aipara::AiAssistantTranslator>);
   r.Register("rawenglish_translator",
              new Component<rime::aipara::RawEnglishTranslator>);
-
   r.Register("aux_code_filter_v3",
              new Component<rime::aipara::AuxCodeFilterV3>);
-  r.Register("cloud_ai_filter_v2",
-             new Component<rime::aipara::CloudAiFilterV2>);
   r.Register("punct_eng_chinese_filter",
              new Component<rime::aipara::PunctEngChineseFilter>);
+  r.Register("cloud_ai_filter_v2",
+             new Component<rime::aipara::CloudAiFilterV2>);
 }
 
 static void rime_aipara_finalize() {}

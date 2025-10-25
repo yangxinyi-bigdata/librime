@@ -85,11 +85,11 @@ class Logger {
   // 默认值直接写在成员后面，相当于 Python dataclass 的默认字段。
   struct EffectiveConfig {
     bool enabled = true;
-    std::filesystem::path log_dir = "/Users/yangxinyi/Library/Rime/log_cpp/";
+    std::filesystem::path log_dir = "/Users/yangxinyi/Library/Aipara/log_cpp/";
     std::string timestamp_format = "%Y-%m-%d %H:%M:%S";
     bool unique_file_log = false;
     std::string unique_file_log_file = "all_modules.log";
-    bool console_output = true;
+    bool console_output = false;
     Level min_level = Level::kDebug;
     bool show_line_info = true;
   };
