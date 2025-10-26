@@ -133,7 +133,7 @@ ProcessResult SmartCursorProcessor::ProcessKeyEvent(const KeyEvent& key_event) {
   Config* config = CurrentConfig();
   const std::string key_repr = key_event.repr();
 
-  AIPARA_LOG_DEBUG(logger_, "key_repr: " + key_repr);
+  // AIPARA_LOG_DEBUG(logger_, "key_repr: " + key_repr);
   // const std::string current_app = context->get_property("client_app");
   // if (!current_app.empty() && config) {
   //   AIPARA_LOG_DEBUG(logger_, "UpdateAsciiModeFromVimState.");
@@ -200,7 +200,15 @@ ProcessResult SmartCursorProcessor::ProcessKeyEvent(const KeyEvent& key_event) {
   if (!paste_to_input.empty() && key_repr == paste_to_input) {
     if (tcp_zmq_) {
       tcp_zmq_->UpdateProperty("command", "get_clipboard");
-      SyncWithServer(context, true);
+      const auto command_key =
+          std::make_optional(std::string("get_clipboard"));
+      const auto command_value = std::make_optional(std::string());
+      SyncWithServer(context,
+                     /*include_config=*/false,
+                     /*send_commit_text=*/false,
+                     command_key,
+                     command_value,
+                     0.2);
     }
     return kAccepted;
   }
@@ -538,9 +546,11 @@ bool SmartCursorProcessor::MoveToNextPunctuation(Context* context) {
     caret_pos = current_start;
   }
 
-  for (size_t i = caret_pos; i < input_length; ++i) {
+  const size_t search_start = std::min(caret_pos, input_length);
+
+  for (size_t i = search_start; i < input_length; ++i) {
     if (punctuation_chars_.count(input[i])) {
-      context->set_caret_pos(i);
+      context->set_caret_pos(i + 1);
       return true;
     }
   }
@@ -573,10 +583,18 @@ bool SmartCursorProcessor::MoveToPrevPunctuation(Context* context) {
     return true;
   }
 
-  for (size_t i = caret_pos; i > current_start; --i) {
+  const size_t input_length = input.length();
+  size_t search_pos = std::min(caret_pos, input_length);
+
+  while (search_pos > current_start &&
+         punctuation_chars_.count(input[search_pos - 1])) {
+    --search_pos;
+  }
+
+  for (size_t i = search_pos; i > current_start; --i) {
     const size_t index = i - 1;
     if (punctuation_chars_.count(input[index])) {
-      context->set_caret_pos(index);
+      context->set_caret_pos(index + 1);
       return true;
     }
   }
@@ -819,14 +837,27 @@ SmartCursorProcessor::LoadChatTriggers(Config* config) const {
 }
 
 // 同步到服务端：可选是否包含配置。
-void SmartCursorProcessor::SyncWithServer(Context* context,
-                                          bool include_config) const {
+void SmartCursorProcessor::SyncWithServer(
+    Context* context,
+    bool include_config,
+    bool send_commit_text,
+    const std::optional<std::string>& command_key,
+    const std::optional<std::string>& command_value,
+    std::optional<double> timeout_seconds,
+    const std::optional<std::string>& position,
+    const std::optional<std::string>& character) const {
   (void)context;
   if (!tcp_zmq_ || !engine_) {
     return;
   }
-  const bool include_options = include_config;
-  tcp_zmq_->SyncWithServer(engine_, include_options);
+  tcp_zmq_->SyncWithServer(engine_,
+                           include_config,
+                           send_commit_text,
+                           command_key,
+                           command_value,
+                           timeout_seconds,
+                           position,
+                           character);
 }
 
 }  // namespace rime::aipara

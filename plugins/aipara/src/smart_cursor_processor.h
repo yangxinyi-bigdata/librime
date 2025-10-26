@@ -86,7 +86,15 @@ class SmartCursorProcessor : public Processor {
       Config* config) const;
 
   // 将上下文/配置同步到外部服务端（通过 TcpZmq）。
-  void SyncWithServer(Context* context, bool include_config = false) const;
+  void SyncWithServer(
+      Context* context,
+      bool include_config = false,
+      bool send_commit_text = false,
+      const std::optional<std::string>& command_key = std::nullopt,
+      const std::optional<std::string>& command_value = std::nullopt,
+      std::optional<double> timeout_seconds = std::nullopt,
+      const std::optional<std::string>& position = std::nullopt,
+      const std::optional<std::string>& character = std::nullopt) const;
 
   // 成员字段：
   Logger logger_;
