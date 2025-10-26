@@ -232,23 +232,35 @@ an<Translation> PunctEngChineseFilter::Apply(an<Translation> translation,
   // 获取用户输入
   const std::string& input = context->input();
 
-  // 初始化状态标志
-  bool ai_reply = false;  // AI回复标志
-  bool ai_chat = false;   // AI聊天标志
-  bool punch_flag = false; // 标点符号标志
+  // 初始化状态标志：
+  // - ai_reply：命中 AI 回复标签后跳过所有标点替换。
+  // - ai_chat：命中 AI 聊天触发器后继续替换标点，但跳过 spans 保存。
+  // - punch_flag：首个候选包含 ASCII 标点时才触发整体替换逻辑。
+  bool ai_reply = false;
+  bool ai_chat = false;
+  bool punch_flag = false;
 
-  // 检查第一个候选词的类型和内容，确定是否需要进行标点转换
+  // 检查第一个候选词。Lua 版本里（count == 1）就在这里判定是否豁免。
+  // 这里同步实现：若首候选属于 AI 回复标签，则直接设置 ai_reply，
+  // 后续候选都不会做标点替换。
   const an<Candidate>& first = originals.front();
   if (first) {
     const std::string first_type = first->type();
     if (!first_type.empty()) {
       if (ai_reply_tags.count(first_type) > 0) {
         ai_reply = true;
+        AIPARA_LOG_INFO(
+            logger_,
+            "Detected AI reply candidate; punctuation replacement disabled. type=" +
+                first_type);
       } else if (ai_chat_triggers.count(first_type) > 0) {
         ai_chat = true;
+        AIPARA_LOG_INFO(
+            logger_,
+            "匹配到ai_chat: " + first_type);
       }
     }
-    if (!ai_reply) {
+    if (!ai_reply && !ai_chat) {
       const std::string& first_text = first->text();
       if (text_formatting::HasPunctuationNoRawEnglish(first_text, &logger_)) {
         punch_flag = true;
@@ -264,7 +276,8 @@ an<Translation> PunctEngChineseFilter::Apply(an<Translation> translation,
   std::size_t count = 0;
 
   try {
-    // 遍历所有原始候选词
+    // 遍历所有原始候选词。
+    // 注意：ai_reply 为 true 时直接走到 else 分支，保持原样输出。
     for (const auto& cand : originals) {
       ++count;
       // 获取候选词的各种属性
@@ -272,7 +285,10 @@ an<Translation> PunctEngChineseFilter::Apply(an<Translation> translation,
       const std::string cand_text = cand->text();
       const std::string cand_comment = cand->comment();
       const bool has_chinese_pos = StartsWith(cand_comment, "chinese_pos:");
-      // 判断是否需要转换标点符号：不是AI回复、有标点符号且数量少于10个
+      // 判断是否需要转换标点符号：
+      // - ai_reply 为 true 表示命中 AI 回复豁免，保持原文。
+      // - punch_flag 为 true 才代表首候选包含 ASCII 标点。
+      // - count < 10 避免无意义地处理过多候选。
       const bool convert = !ai_reply && punch_flag && count < 10;
 
       if (convert) {
@@ -323,6 +339,11 @@ an<Translation> PunctEngChineseFilter::Apply(an<Translation> translation,
         rewritten.push_back(replaced_cand);
       } else {
         // 不需要转换标点符号
+        if (ai_reply && count == 1) {
+          AIPARA_LOG_INFO(
+              logger_,
+              "AI reply exemption active; emitting original candidate text.");
+        }
         std::string comment =
             FormatComment(cand_type,
                           cand_comment,

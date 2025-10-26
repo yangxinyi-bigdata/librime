@@ -558,6 +558,13 @@ ProcessResult CloudInputProcessor::HandleAiTalkSelection(
     return kNoop;
   }
 
+  AiAssistantConfig ai_config = LoadAiAssistantConfig(config);
+
+  std::size_t select_index = 0;
+  if (!IsSelectKey(key_repr, ai_config, &select_index)) {
+    return kNoop;
+  }
+
   Composition& composition = context->composition();
   if (composition.empty()) {
     return kNoop;
@@ -567,6 +574,7 @@ ProcessResult CloudInputProcessor::HandleAiTalkSelection(
   if (!first_segment.HasTag("ai_talk")) {
     return kNoop;
   }
+
   if (context->get_property("rawenglish_prompt") == "1") {
     return kNoop;
   }
@@ -579,10 +587,108 @@ ProcessResult CloudInputProcessor::HandleAiTalkSelection(
     }
   }
   if (chat_trigger.empty()) {
+    chat_trigger = context->get_property("current_ai_context");
+  }
+
+  Segment& last_segment = composition.back();
+  if (!last_segment.menu) {
     return kNoop;
   }
 
-  return HandleAiCandidateCommit(key_repr, chat_trigger, context, config);
+  if (last_segment.menu->empty()) {
+    return kNoop;
+  }
+
+  if (select_index >= last_segment.menu->candidate_count()) {
+    return kNoop;
+  }
+
+  an<Candidate> candidate = last_segment.menu->GetCandidateAt(select_index);
+  if (!candidate) {
+    return kNoop;
+  }
+
+  const std::string& input = context->input();
+  const bool is_last_candidate = candidate->end() == input.size();
+  if (!is_last_candidate) {
+    return kNoop;
+  }
+
+  if (candidate->type() == "clear_chat_history") {
+    if (tcp_zmq_) {
+      tcp_zmq_->SyncWithServer(engine_, false, false, "clear_chat_history",
+                               chat_trigger);
+    }
+    context->Clear();
+    return kAccepted;
+  }
+
+  std::string prefix_with_first;
+  std::string prefix_without_first;
+  if (composition.size() > 1) {
+    for (std::size_t i = 0; i + 1 < composition.size(); ++i) {
+      Segment& seg = composition[i];
+      if (auto selected = seg.GetSelectedCandidate()) {
+        const std::string& seg_text = selected->text();
+        prefix_with_first += seg_text;
+        if (i > 0) {
+          prefix_without_first += seg_text;
+        }
+      }
+    }
+  }
+
+  const std::string candidate_text = candidate->text();
+  std::string commit_text = prefix_with_first;
+  commit_text += candidate_text;
+  std::string send_text = prefix_without_first;
+  send_text += candidate_text;
+
+  if (commit_text.empty()) {
+    commit_text = candidate_text;
+  }
+  if (send_text.empty()) {
+    send_text = candidate_text;
+  }
+
+  auto it_name = ai_config.chat_names.find(chat_trigger);
+  if (it_name != ai_config.chat_names.end()) {
+    const std::string chat_name = NormalizeChatPrefix(it_name->second);
+    const std::string stripped = MaybeStripPrefix(send_text, chat_name);
+    if (!stripped.empty()) {
+      send_text = stripped;
+    }
+  }
+
+  if (tcp_zmq_) {
+    tcp_zmq_->ReadAllFromAiSocket();
+    context->set_property("ai_replay_stream", std::string(kWaitingMessage));
+    context->set_property("start_ai_question", "1");
+    context->set_property("get_ai_stream", "start");
+
+    if (ai_config.behavior.commit_question) {
+      std::optional<std::string> response_key;
+      if (!ai_config.behavior.after_question_send_key.empty()) {
+        response_key = ai_config.behavior.after_question_send_key;
+      }
+      tcp_zmq_->SendChatMessage(send_text, chat_trigger, response_key);
+    } else {
+      tcp_zmq_->SendChatMessage(send_text, chat_trigger, std::nullopt);
+    }
+  }
+
+  if (ai_config.behavior.commit_question) {
+    context->Clear();
+    std::string final_commit = commit_text;
+    if (ai_config.behavior.strip_chat_prefix) {
+      final_commit = send_text;
+    }
+    engine_->CommitText(final_commit);
+  } else {
+    context->Clear();
+  }
+
+  return kAccepted;
 }
 
 ProcessResult CloudInputProcessor::HandleRawEnglishInput(
@@ -682,92 +788,124 @@ ProcessResult CloudInputProcessor::HandleAiCandidateCommit(
     const std::string& chat_trigger,
     Context* context,
     Config* config) {
+  // 检查上下文对象是否存在，如果不存在则不执行任何操作
   if (!context) {
     return kNoop;
   }
 
+  // 加载AI助手配置
   AiAssistantConfig ai_config = LoadAiAssistantConfig(config);
 
+  // 初始化选择索引，并检查按键是否为选择键
   std::size_t select_index = 0;
   if (!IsSelectKey(key_repr, ai_config, &select_index)) {
     return kNoop;
   }
 
+  // 获取当前编辑组合
   Composition& composition = context->composition();
+  // 如果编辑组合为空，则不执行任何操作
   if (composition.empty()) {
     return kNoop;
   }
+  // 获取最后一个段落
   Segment& last_segment = composition.back();
+  // 检查段落是否有菜单，如果没有则不执行任何操作
   if (!last_segment.menu) {
     return kNoop;
   }
 
+  // 检查菜单是否为空，如果是则不执行任何操作
   if (last_segment.menu->empty()) {
     return kNoop;
   }
 
+  // 检查选择索引是否超出候选词数量范围，如果是则不执行任何操作
   if (select_index >= last_segment.menu->candidate_count()) {
     return kNoop;
   }
 
+  // 获取指定索引的候选词
   an<Candidate> candidate = last_segment.menu->GetCandidateAt(select_index);
+  // 如果候选词不存在，则不执行任何操作
   if (!candidate) {
     return kNoop;
   }
 
+  // 特殊处理：清空聊天历史记录
   if (candidate->type() == "clear_chat_history") {
     if (tcp_zmq_) {
+      // 与服务器同步，清空聊天历史记录
       tcp_zmq_->SyncWithServer(engine_, false, false, "clear_chat_history",
                                chat_trigger);
     }
+    // 清空上下文
     context->Clear();
     return kAccepted;
   }
 
+  // 获取提交文本，如果为空则使用候选词文本
   std::string commit_text = context->GetCommitText();
   if (commit_text.empty()) {
     commit_text = candidate->text();
   }
 
+  // 从配置中获取聊天名称
   std::string chat_name;
   auto it_name = ai_config.chat_names.find(chat_trigger);
   if (it_name != ai_config.chat_names.end()) {
     chat_name = NormalizeChatPrefix(it_name->second);
   }
 
+  // 去除提交文本中的聊天前缀，如果结果为空则使用候选词文本
   std::string send_text = MaybeStripPrefix(commit_text, chat_name);
   if (send_text.empty()) {
     send_text = candidate->text();
   }
 
+  // 如果TCP/ZMQ连接存在，则发送聊天消息
   if (tcp_zmq_) {
+    // 读取AI套接字中的所有数据
     tcp_zmq_->ReadAllFromAiSocket();
+    // 设置AI回复流为等待消息
     context->set_property("ai_replay_stream", std::string(kWaitingMessage));
+    // 标记开始AI问题
     context->set_property("start_ai_question", "1");
+    // 标记开始获取AI流
     context->set_property("get_ai_stream", "start");
 
+    // 根据配置决定是否提交问题
     if (ai_config.behavior.commit_question) {
       std::optional<std::string> response_key;
+      // 如果配置了问题发送后的按键，则设置响应键
       if (!ai_config.behavior.after_question_send_key.empty()) {
         response_key = ai_config.behavior.after_question_send_key;
       }
+      // 发送聊天消息，包含响应键
       tcp_zmq_->SendChatMessage(send_text, chat_trigger, response_key);
     } else {
+      // 发送聊天消息，不包含响应键
       tcp_zmq_->SendChatMessage(send_text, chat_trigger, std::nullopt);
     }
   }
 
+  // 根据配置决定是否提交问题文本
   if (ai_config.behavior.commit_question) {
+    // 清空上下文
     context->Clear();
+    // 确定最终提交的文本
     std::string final_commit = commit_text;
     if (ai_config.behavior.strip_chat_prefix) {
       final_commit = send_text;
     }
+    // 通过引擎提交文本
     engine_->CommitText(final_commit);
   } else {
+    // 不提交问题文本，只清空上下文
     context->Clear();
   }
 
+  // 返回已接受状态
   return kAccepted;
 }
 
