@@ -117,7 +117,7 @@ CloudAiFilterV2::CloudAiFilterV2(const Ticket& ticket)
       logger_(MakeLogger(std::string(kLoggerName))) {
   logger_.Clear();
   cache_.cache_timeout = kDefaultCacheTimeoutSeconds;
-  EnsureTcpClient();
+  AttachTcpZmq(AcquireGlobalTcpZmq());
 }
 
 an<Translation> CloudAiFilterV2::Apply(an<Translation> translation,
@@ -235,7 +235,9 @@ an<Translation> CloudAiFilterV2::Apply(an<Translation> translation,
       input.substr(seg_start, seg_end - seg_start);
 
   if (cloud_convert == "1") {
-    EnsureTcpClient();
+    if (!tcp_zmq_) {
+      AttachTcpZmq(AcquireGlobalTcpZmq());
+    }
     std::vector<std::string> long_texts =
         CollectLongCandidateTexts(originals, seg_end);
     if (tcp_zmq_) {
@@ -363,15 +365,6 @@ void CloudAiFilterV2::UpdateCurrentConfig(Config* config) {
 
 void CloudAiFilterV2::AttachTcpZmq(TcpZmq* client) {
   tcp_zmq_ = client;
-}
-
-void CloudAiFilterV2::EnsureTcpClient() {
-  if (tcp_zmq_) {
-    return;
-  }
-  TcpZmq& instance = TcpZmq::Instance();
-  instance.Init();
-  AttachTcpZmq(&instance);
 }
 
 void CloudAiFilterV2::ClearCache() {

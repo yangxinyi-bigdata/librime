@@ -21,18 +21,22 @@
 
 namespace rime::aipara {
 
+// 候选批次结构体，用于存储一组候选词及相关状态信息
 struct RawEnglishTranslator::CandidateBatch {
-  std::vector<CachedCandidate> candidates;
-  bool used_fallback = false;
-  std::size_t fallback_length_diff = 0;
-  std::size_t script_fail_length = 0;
+  std::vector<CachedCandidate> candidates;  // 候选词列表
+  bool used_fallback = false;               // 是否使用了回退机制
+  std::size_t fallback_length_diff = 0;     // 回退时的长度差异
+  std::size_t script_fail_length = 0;       // 脚本翻译失败的长度
 };
 
 namespace {
 
+// 每个段落最大候选词数量
 constexpr std::size_t kMaxCandidatesPerSegment = 2;
+// 最大输出候选词数量
 constexpr std::size_t kMaxOutputCandidates = 4;
 
+// 计算UTF-8字符串的实际字符长度（非字节长度）
 std::size_t Utf8Length(const std::string& text) {
   std::size_t count = 0;
   for (unsigned char ch : text) {
@@ -43,6 +47,7 @@ std::size_t Utf8Length(const std::string& text) {
   return count;
 }
 
+// 检查文本是否包含被跟踪的标点符号
 bool ContainsTrackedPunctuation(const std::string& text) {
   static const std::string kTracked = ",.!?;:()[]<>/_=+*&^%$#@~|-'\"";
   return std::any_of(text.begin(), text.end(), [](char ch) {
@@ -50,6 +55,7 @@ bool ContainsTrackedPunctuation(const std::string& text) {
   });
 }
 
+// 移除文本中的被跟踪标点符号
 std::string StripTrackedPunctuation(const std::string& text) {
   static const std::string kTracked = ",.!?;:()[]<>/_=+*&^%$#@~|-'\"";
   std::string result;
@@ -62,6 +68,7 @@ std::string StripTrackedPunctuation(const std::string& text) {
   return result;
 }
 
+// 从候选词中提取跨度信息
 Spans ExtractSpansFromCandidate(const an<Candidate>& cand) {
   Spans spans;
   if (!cand) {
@@ -74,6 +81,7 @@ Spans ExtractSpansFromCandidate(const an<Candidate>& cand) {
   return spans;
 }
 
+// 从跨度信息中提取顶点位置
 std::vector<std::size_t> VerticesFromSpans(const Spans& spans) {
   std::vector<std::size_t> vertices;
   const std::size_t first = spans.start();
@@ -95,49 +103,69 @@ std::vector<std::size_t> VerticesFromSpans(const Spans& spans) {
 
 }  // namespace
 
+// RawEnglishTranslator构造函数，初始化翻译器和日志记录器
 RawEnglishTranslator::RawEnglishTranslator(const Ticket& ticket)
     : Translator(ticket), logger_(MakeLogger("rawenglish_translator")) {
   EnsureTranslators();
 }
 
+// 确保翻译器组件已正确初始化
+// 此函数负责初始化和检查两个关键的翻译器组件：
+// 1. script_translator_ - 用于处理脚本翻译的主要翻译器
+// 2. user_dict_set_translator_ - 用于处理用户词典集的翻译器
+// 这些翻译器是处理混合输入（英文+中文）的核心组件
 void RawEnglishTranslator::EnsureTranslators() {
+  // 检查引擎是否存在，如果不存在则重置所有翻译器并返回
   if (!engine_) {
     script_translator_.reset();
     user_dict_set_translator_.reset();
     return;
   }
 
+  // 获取script_translator组件，这是Rime输入法中处理脚本翻译的核心组件
   auto component = Translator::Require("script_translator");
   if (!component) {
+    // 如果组件不可用，记录警告并重置所有翻译器
     AIPARA_LOG_WARN(logger_, "script_translator component unavailable.");
     script_translator_.reset();
     user_dict_set_translator_.reset();
     return;
   }
 
+  // 初始化脚本翻译器（如果尚未初始化）
   if (!script_translator_) {
+    // 创建脚本翻译器的票据，包含引擎、类型和名称信息
     Ticket script_ticket(engine_, "translator", "script_translator");
+    // 使用组件创建脚本翻译器实例
     script_translator_.reset(component->Create(script_ticket));
     if (script_translator_) {
+      // 成功创建后记录信息日志
       AIPARA_LOG_INFO(logger_, "script_translator initialized.");
     } else {
+      // 创建失败则记录警告日志
       AIPARA_LOG_WARN(logger_, "failed to create script_translator instance.");
     }
   }
 
+  // 初始化用户词典集翻译器（如果尚未初始化）
   if (!user_dict_set_translator_) {
+    // 创建用户词典集翻译器的票据
     Ticket user_ticket(engine_, "user_dict_set", "script_translator");
+    // 使用相同的script_translator组件创建用户词典集翻译器实例
     user_dict_set_translator_.reset(component->Create(user_ticket));
     if (user_dict_set_translator_) {
+      // 成功创建后记录信息日志
       AIPARA_LOG_INFO(logger_,
                       "user_dict_set script_translator initialized.");
     } else {
+      // 创建失败则记录警告日志
       AIPARA_LOG_WARN(logger_,
                       "failed to create user_dict_set script_translator.");
     }
   }
 }
 
+// 重置翻译器状态
 void RawEnglishTranslator::ResetState() {
   rawenglish_delimiter_before_.clear();
   rawenglish_delimiter_after_.clear();
@@ -149,28 +177,33 @@ void RawEnglishTranslator::ResetState() {
   combo_cache_.clear();
 }
 
+// 从配置文件中加载设置
 void RawEnglishTranslator::LoadConfig(Config* config) {
   ResetState();
   if (!config) {
     return;
   }
 
+  // 加载原始英文前后分隔符
   config->GetString("translator/rawenglish_delimiter_before",
                     &rawenglish_delimiter_before_);
   config->GetString("translator/rawenglish_delimiter_after",
                     &rawenglish_delimiter_after_);
 
+  // 加载分隔符设置
   std::string delimiter;
   if (config->GetString("speller/delimiter", &delimiter) &&
       !delimiter.empty()) {
     delimiter_ = delimiter.substr(0, 1);
   }
 
+  // 加载其他配置选项
   config->GetBool("translator/replace_punct_enabled",
                   &replace_punct_enabled_);
   config->GetBool("aux_code/single_fuzhu", &single_fuzhu_);
   config->GetString("aux_code/fuzhu_mode", &fuzhu_mode_);
 
+  // 加载英文模式符号
   std::string english_symbol;
   if (config->GetString("translator/english_mode_symbol", &english_symbol) &&
       !english_symbol.empty()) {
@@ -178,6 +211,7 @@ void RawEnglishTranslator::LoadConfig(Config* config) {
   }
 }
 
+// 确保配置已加载，如果方案ID发生变化则重新加载
 void RawEnglishTranslator::EnsureConfigLoaded() {
   if (!engine_) {
     ResetState();
@@ -202,6 +236,7 @@ void RawEnglishTranslator::EnsureConfigLoaded() {
   }
 }
 
+// 查询输入并生成翻译结果
 an<Translation> RawEnglishTranslator::Query(const string& input,
                                             const Segment& segment) {
   EnsureConfigLoaded();
@@ -219,6 +254,7 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
   const std::string context_input = context->input();
   spans_manager::AutoClearCheck(context, context_input, &logger_);
 
+  // 处理单个字符输入（英文模式符号）
   if (input.size() == 1) {
     if (!english_mode_symbol_.empty() && input == english_mode_symbol_) {
       const std::string markdown = "```\n\n```";
@@ -240,11 +276,13 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
     return nullptr;
   }
 
+  // 检查段落是否具有正确的标签
   if (!segment.HasTag("rawenglish_combo") &&
       !segment.HasTag("single_rawenglish")) {
     return nullptr;
   }
 
+  // 处理单个原始英文输入
   if (segment.HasTag("single_rawenglish")) {
     const std::size_t symbol_len = english_mode_symbol_.size();
     if (input.size() <= symbol_len) {
@@ -280,12 +318,14 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
     return translation;
   }
 
+  // 检查脚本翻译器是否可用
   if (!script_translator_) {
     AIPARA_LOG_WARN(logger_,
                     "script_translator unavailable, cannot handle combo.");
     return nullptr;
   }
 
+  // 按原始英文分割文本段落
   const auto text_segments = text_formatting::SplitByRawEnglishWithLog(
       input, segment.start, segment.end, rawenglish_delimiter_before_,
       rawenglish_delimiter_after_, &logger_);
@@ -295,6 +335,7 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
     return nullptr;
   }
 
+  // 处理只有原始英文组合的情况
   if (!text_segments.empty() &&
       text_segments.front().type == "rawenglish_combo") {
     const auto& first = text_segments.front();
@@ -319,6 +360,7 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
   std::size_t fallback_length_diff = 0;
   std::size_t script_fail_code = 0;
 
+  // 收集ABC候选词的Lambda函数
   auto collect_abc_candidates =
       [&](const std::string& query_content,
           const text_formatting::TextSegment& text_segment,
@@ -340,10 +382,12 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
       return batch;
     }
 
+    // 创建脚本段落并设置标签
     Segment script_segment(text_segment.start,
                            text_segment.start + query_length);
     script_segment.tags.insert("abc");
 
+    // 创建候选词的Lambda函数
     const auto make_candidate =
         [&](const an<Candidate>& cand, std::size_t cand_length) {
           CachedCandidate cached;
@@ -361,6 +405,7 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
     std::vector<CachedCandidate> valid;
     std::vector<std::pair<CachedCandidate, std::size_t>> fallback;
 
+    // 从翻译器收集候选词的Lambda函数
     const auto collect_from = [&](const an<Translator>& translator) {
       if (!translator) {
         return;
@@ -394,11 +439,13 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
       }
     };
 
+    // 从脚本翻译器和用户词典集翻译器收集候选词
     collect_from(script_translator_);
     if (valid.size() < kMaxCandidatesPerSegment) {
       collect_from(user_dict_set_translator_);
     }
 
+    // 处理没有有效候选词的情况
     if (valid.empty()) {
       if (allow_fallback && !fallback.empty()) {
         std::stable_sort(fallback.begin(), fallback.end(),
@@ -441,6 +488,7 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
     return batch;
   };
 
+  // 处理除最后一个段落外的所有段落
   for (std::size_t i = 0; i + 1 < seg_count; ++i) {
     const auto& text_segment = text_segments[i];
     const std::string cache_key =
@@ -489,11 +537,13 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
     combo_cache_[cache_key] = segment_candidates[i];
   }
 
+  // 处理最后一个段落
   if (!text_segments.empty()) {
     const std::size_t i = seg_count - 1;
     const auto& text_segment = text_segments[i];
     std::string query_content = text_segment.content;
 
+    // 处理辅助码模式下的特殊逻辑
     if (text_segment.type == "abc" && single_fuzhu_ &&
         fuzhu_mode_ == "all") {
       if (ContainsTrackedPunctuation(query_content)) {
@@ -553,12 +603,14 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
     combo_cache_[cache_key] = segment_candidates[i];
   }
 
+  // 检查所有段落是否有候选词
   for (const auto& candidates : segment_candidates) {
     if (candidates.empty()) {
       return nullptr;
     }
   }
 
+  // 创建指向候选词的指针数组
   std::vector<std::vector<const CachedCandidate*>> pointer_segments;
   pointer_segments.reserve(segment_candidates.size());
   for (auto& candidates : segment_candidates) {
@@ -570,6 +622,7 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
     pointer_segments.push_back(std::move(pointers));
   }
 
+  // 生成所有可能的组合
   std::vector<std::vector<const CachedCandidate*>> all_combinations;
   std::vector<const CachedCandidate*> current;
   std::function<void(std::size_t)> generate =
@@ -591,6 +644,7 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
     return nullptr;
   }
 
+  // 创建翻译结果
   auto translation = New<FifoTranslation>();
   if (!translation) {
     return nullptr;
@@ -601,6 +655,7 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
   Spans aggregated_spans;
   bool aggregated_initialized = false;
 
+  // 处理所有组合，生成最终候选词
   for (const auto& combination : all_combinations) {
     if (output_count >= kMaxOutputCandidates) {
       break;
@@ -616,6 +671,7 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
       aggregated_initialized = false;
     }
 
+    // 组合候选词文本和预编辑
     for (std::size_t idx = 0; idx < combination.size(); ++idx) {
       const CachedCandidate& candidate = *combination[idx];
       final_text += candidate.text;
@@ -654,6 +710,7 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
       }
     }
 
+    // 保存跨度信息
     if (output_count == 0) {
       const auto vertices = VerticesFromSpans(aggregated_spans);
       if (!vertices.empty()) {
@@ -662,6 +719,7 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
       }
     }
 
+    // 创建最终候选词
     if (!final_text.empty() && final_text != input) {
       std::size_t candidate_end = segment.end;
       if (delete_last_code && candidate_end > segment.start) {
@@ -703,6 +761,7 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
   return translation;
 }
 
+// 更新当前配置
 void RawEnglishTranslator::UpdateCurrentConfig(Config* config) {
   LoadConfig(config);
   config_loaded_ = (config != nullptr);

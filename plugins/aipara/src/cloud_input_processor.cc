@@ -291,8 +291,8 @@ CloudInputProcessor::CloudInputProcessor(const Ticket& ticket)
     : Processor(ticket), logger_(MakeLogger(std::string(kLoggerName))) {
   // 清空日志记录器，确保没有残留的日志信息
   logger_.Clear();
-  // 确保TCP客户端已初始化并连接，用于与云服务通信
-  EnsureTcpClient();
+  // 复用插件级共享的 TcpZmq 客户端，用于与云服务通信
+  AttachTcpZmq(AcquireGlobalTcpZmq());
 }
 
 /**
@@ -406,15 +406,6 @@ void CloudInputProcessor::UpdateProperty(const std::string& property_name,
 
 void CloudInputProcessor::AttachTcpZmq(TcpZmq* client) {
   tcp_zmq_ = client;
-}
-
-void CloudInputProcessor::EnsureTcpClient() {
-  if (tcp_zmq_) {
-    return;
-  }
-  TcpZmq& instance = TcpZmq::Instance();
-  instance.Init();
-  AttachTcpZmq(&instance);
 }
 
 void CloudInputProcessor::ApplyPendingProperties(Context* context) {

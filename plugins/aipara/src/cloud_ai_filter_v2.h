@@ -69,7 +69,6 @@ class CloudAiFilterV2 : public Filter {
 
   Logger logger_;
 
-  void EnsureTcpClient();
   void ClearCache();
   void SaveCache(const std::string& input,
                  const ParsedResult& parsed);

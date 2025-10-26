@@ -101,6 +101,7 @@ struct AiAssistantTranslator::AiStreamResult {
 AiAssistantTranslator::AiAssistantTranslator(const Ticket& ticket)
     : Translator(ticket),
       logger_(MakeLogger("ai_assistant_translator")) {
+  AttachTcpZmq(AcquireGlobalTcpZmq());
   AIPARA_LOG_INFO(logger_, "AiAssistantTranslator initialized.");
 }
 

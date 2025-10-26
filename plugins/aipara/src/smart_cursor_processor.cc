@@ -58,10 +58,8 @@ SmartCursorProcessor::SmartCursorProcessor(const Ticket& ticket)
   logger_.Clear();
   AIPARA_LOG_DEBUG(logger_, "SmartCursorProcessor initialized.");
 
-  // 确保 TcpZmq 在插件首次执行时完成初始化。
-  TcpZmq& tcp_client = TcpZmq::Instance();
-  tcp_client.Init();
-  tcp_zmq_ = &tcp_client;
+  // 确保使用插件级共享的 TcpZmq 客户端。
+  tcp_zmq_ = AcquireGlobalTcpZmq();
   if (engine_ && engine_->context() && tcp_zmq_) {
     ApplyGlobalOptions(engine_->context());
   }
@@ -225,17 +223,34 @@ ProcessResult SmartCursorProcessor::ProcessKeyEvent(const KeyEvent& key_event) {
   return kNoop;
 }
 
-// 选词完成：退出搜索模式，清理 spans（用于范围可视化等）。
+/**
+ * @brief 处理选词完成事件
+ * 
+ * 当用户完成选词操作时调用此函数，主要负责：
+ * 1. 退出搜索移动模式（如果处于该模式）
+ * 2. 清理文本范围可视化标记（spans）
+ * 
+ * 搜索移动模式允许用户在输入文本中快速搜索和跳转，选词完成后需要退出该模式，
+ * 以便恢复正常输入状态。同时清理所有可视化标记，避免影响后续操作。
+ * 
+ * @param context 输入法上下文指针，用于访问和修改输入状态
+ *               如果为nullptr则直接返回
+ */
 void SmartCursorProcessor::OnSelect(Context* context) {
+  // 验证上下文指针有效性
   if (!context) {
     return;
   }
 
+  // 如果处于搜索移动模式，则退出该模式
   if (context->get_option("search_move")) {
+    // 关闭搜索移动模式选项
     context->set_option("search_move", false);
+    // 清空搜索字符串
     context->set_property("search_move_str", "");
   }
 
+  // 清理所有文本范围可视化标记，并记录操作原因
   spans_manager::ClearSpans(context, "选词完成", &logger_);
 }
 

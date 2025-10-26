@@ -59,8 +59,6 @@ class CloudInputProcessor : public Processor {
   void AttachTcpZmq(TcpZmq* client);
 
  private:
-  void EnsureTcpClient();
-
   void ApplyPendingProperties(rime::Context* context);
   bool HandleShiftReleaseInterception(const std::string& key_repr,
                                       rime::Context* context);

@@ -4,13 +4,7 @@
 #include <rime/common.h>
 #include <rime/filter.h>
 
-#include <string>
-#include <unordered_map>
-#include <unordered_set>
-
-namespace rime {
-class Config;
-}  // namespace rime
+#include "common/logger.h"
 
 namespace rime::aipara {
 
@@ -21,13 +15,8 @@ class PunctEngChineseFilter : public Filter {
   an<Translation> Apply(an<Translation> translation,
                         CandidateList* candidates) override;
 
-  void UpdateCurrentConfig(Config* config);
-
  private:
-  std::string delimiter_;
-  std::string cloud_convert_symbol_;
-  std::unordered_set<std::string> ai_reply_tags_;
-  std::unordered_set<std::string> ai_chat_triggers_;
+  Logger logger_;
 };
 
 }  // namespace rime::aipara

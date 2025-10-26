@@ -11,11 +11,15 @@
 #include "rawenglish_segmentor.h"
 #include "rawenglish_translator.h"
 #include "smart_cursor_processor.h"
+#include "common/tcp_zmq.h"
 
 using rime::Component;
 using rime::Registry;
+using rime::aipara::AcquireGlobalTcpZmq;
 
 static void rime_aipara_initialize() {
+  AcquireGlobalTcpZmq();
+
   Registry& r = Registry::instance();
 
   r.Register("smart_cursor_processor",

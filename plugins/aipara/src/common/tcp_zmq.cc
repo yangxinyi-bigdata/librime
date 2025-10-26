@@ -165,6 +165,12 @@ TcpZmq& TcpZmq::Instance() {
   return instance;
 }
 
+TcpZmq* AcquireGlobalTcpZmq() {
+  TcpZmq& instance = TcpZmq::Instance();
+  instance.Init();
+  return &instance;
+}
+
 void TcpZmq::SetGlobalOption(const std::string& name, bool value) {
   const auto it = global_option_state_.find(name);
   if (it != global_option_state_.end() && it->second == value) {

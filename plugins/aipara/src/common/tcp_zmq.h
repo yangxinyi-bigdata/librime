@@ -264,6 +264,8 @@ class TcpZmq {
   bool update_global_option_state_ = false;
 };
 
+TcpZmq* AcquireGlobalTcpZmq();
+
 }  // namespace rime::aipara
 
 #endif  // PLUGINS_AIPARA_SRC_COMMON_TCP_ZMQ_H_
