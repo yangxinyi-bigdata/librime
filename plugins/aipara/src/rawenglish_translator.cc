@@ -155,8 +155,7 @@ void RawEnglishTranslator::EnsureTranslators() {
     user_dict_set_translator_.reset(component->Create(user_ticket));
     if (user_dict_set_translator_) {
       // 成功创建后记录信息日志
-      AIPARA_LOG_INFO(logger_,
-                      "user_dict_set script_translator initialized.");
+      AIPARA_LOG_INFO(logger_, "user_dict_set script_translator initialized.");
     } else {
       // 创建失败则记录警告日志
       AIPARA_LOG_WARN(logger_,
@@ -198,8 +197,7 @@ void RawEnglishTranslator::LoadConfig(Config* config) {
   }
 
   // 加载其他配置选项
-  config->GetBool("translator/replace_punct_enabled",
-                  &replace_punct_enabled_);
+  config->GetBool("translator/replace_punct_enabled", &replace_punct_enabled_);
   config->GetBool("aux_code/single_fuzhu", &single_fuzhu_);
   config->GetString("aux_code/fuzhu_mode", &fuzhu_mode_);
 
@@ -256,21 +254,21 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
 
   // 处理单个字符输入（英文模式符号）
   if (input.size() == 1) {
-    if (!english_mode_symbol_.empty() && input == english_mode_symbol_) {
-      const std::string markdown = "```\n\n```";
+    if (input == "`") {
       auto translation = New<FifoTranslation>();
       if (!translation) {
         return nullptr;
       }
       auto cand_markdown =
           New<SimpleCandidate>("punct", segment.start, segment.end,
-                               markdown, std::string(), english_mode_symbol_);
-      auto cand_symbol =
-          New<SimpleCandidate>("punct", segment.start, segment.end,
-                               english_mode_symbol_, std::string(),
-                               english_mode_symbol_);
+                               "```\n\n```", std::string(), "`");
+      auto backquote_symbol = New<SimpleCandidate>(
+          "punct", segment.start, segment.end, "`", std::string(), "`");
+      auto three_backquote_symbol = New<SimpleCandidate>(
+          "punct", segment.start, segment.end, "```", std::string(), "`");
+      translation->Append(backquote_symbol);
       translation->Append(cand_markdown);
-      translation->Append(cand_symbol);
+      translation->Append(three_backquote_symbol);
       return translation;
     }
     return nullptr;
@@ -290,9 +288,8 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
     }
 
     std::string inner_content;
-    if (symbol_len > 0 &&
-        input.compare(input.size() - symbol_len, symbol_len,
-                      english_mode_symbol_) == 0) {
+    if (symbol_len > 0 && input.compare(input.size() - symbol_len, symbol_len,
+                                        english_mode_symbol_) == 0) {
       inner_content = input.substr(symbol_len, input.size() - 2 * symbol_len);
     } else {
       inner_content = input.substr(symbol_len);
@@ -364,8 +361,7 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
   auto collect_abc_candidates =
       [&](const std::string& query_content,
           const text_formatting::TextSegment& text_segment,
-          std::size_t query_length,
-          bool allow_fallback) -> CandidateBatch {
+          std::size_t query_length, bool allow_fallback) -> CandidateBatch {
     CandidateBatch batch;
     if (query_content.empty()) {
       RawEnglishTranslator::CachedCandidate candidate;
@@ -388,19 +384,19 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
     script_segment.tags.insert("abc");
 
     // 创建候选词的Lambda函数
-    const auto make_candidate =
-        [&](const an<Candidate>& cand, std::size_t cand_length) {
-          CachedCandidate cached;
-          cached.text = cand->text();
-          const std::string preedit = cand->preedit();
-          cached.preedit = preedit.empty() ? query_content : preedit;
-          cached.spans = ExtractSpansFromCandidate(cand);
-          cached.start = text_segment.start;
-          cached.end = text_segment.start + cand_length;
-          cached.length = text_segment.length;
-          cached.type = text_segment.type;
-          return cached;
-        };
+    const auto make_candidate = [&](const an<Candidate>& cand,
+                                    std::size_t cand_length) {
+      CachedCandidate cached;
+      cached.text = cand->text();
+      const std::string preedit = cand->preedit();
+      cached.preedit = preedit.empty() ? query_content : preedit;
+      cached.spans = ExtractSpansFromCandidate(cand);
+      cached.start = text_segment.start;
+      cached.end = text_segment.start + cand_length;
+      cached.length = text_segment.length;
+      cached.type = text_segment.type;
+      return cached;
+    };
 
     std::vector<CachedCandidate> valid;
     std::vector<std::pair<CachedCandidate, std::size_t>> fallback;
@@ -458,9 +454,7 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
                 ? text_segment.length - fallback.front().second
                 : 0;
         for (std::size_t i = 0;
-             i < fallback.size() &&
-             i < kMaxCandidatesPerSegment;
-             ++i) {
+             i < fallback.size() && i < kMaxCandidatesPerSegment; ++i) {
           batch.candidates.push_back(fallback[i].first);
         }
         return batch;
@@ -491,9 +485,9 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
   // 处理除最后一个段落外的所有段落
   for (std::size_t i = 0; i + 1 < seg_count; ++i) {
     const auto& text_segment = text_segments[i];
-    const std::string cache_key =
-        !text_segment.original.empty() ? text_segment.original
-                                       : text_segment.content;
+    const std::string cache_key = !text_segment.original.empty()
+                                      ? text_segment.original
+                                      : text_segment.content;
     auto cache_it = combo_cache_.find(cache_key);
     if (cache_it != combo_cache_.end()) {
       segment_candidates[i] = cache_it->second;
@@ -502,16 +496,15 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
 
     std::vector<CachedCandidate> candidates_for_segment;
     if (text_segment.type == "abc") {
-      CandidateBatch batch = collect_abc_candidates(
-          text_segment.content, text_segment,
-          text_segment.content.size(), false);
+      CandidateBatch batch =
+          collect_abc_candidates(text_segment.content, text_segment,
+                                 text_segment.content.size(), false);
       candidates_for_segment = std::move(batch.candidates);
     } else if (text_segment.type == "rawenglish_combo") {
       CachedCandidate candidate;
       candidate.text = text_segment.content;
-      candidate.preedit =
-          text_segment.original.empty() ? text_segment.content
-                                        : text_segment.original;
+      candidate.preedit = text_segment.original.empty() ? text_segment.content
+                                                        : text_segment.original;
       candidate.start = text_segment.start;
       candidate.end = text_segment.end;
       candidate.length = text_segment.length;
@@ -544,8 +537,7 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
     std::string query_content = text_segment.content;
 
     // 处理辅助码模式下的特殊逻辑
-    if (text_segment.type == "abc" && single_fuzhu_ &&
-        fuzhu_mode_ == "all") {
+    if (text_segment.type == "abc" && single_fuzhu_ && fuzhu_mode_ == "all") {
       if (ContainsTrackedPunctuation(query_content)) {
         const std::string stripped = StripTrackedPunctuation(query_content);
         if (!stripped.empty() && stripped.size() % 2 == 1 &&
@@ -562,8 +554,8 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
     }
 
     if (text_segment.type == "abc") {
-      CandidateBatch batch = collect_abc_candidates(
-          query_content, text_segment, query_content.size(), true);
+      CandidateBatch batch = collect_abc_candidates(query_content, text_segment,
+                                                    query_content.size(), true);
       segment_candidates[i] = batch.candidates;
       if (batch.used_fallback) {
         used_fallback = true;
@@ -575,9 +567,8 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
     } else if (text_segment.type == "rawenglish_combo") {
       CachedCandidate candidate;
       candidate.text = text_segment.content;
-      candidate.preedit =
-          text_segment.original.empty() ? text_segment.content
-                                        : text_segment.original;
+      candidate.preedit = text_segment.original.empty() ? text_segment.content
+                                                        : text_segment.original;
       candidate.start = text_segment.start;
       candidate.end = text_segment.end;
       candidate.length = text_segment.length;
@@ -597,9 +588,9 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
       segment_candidates[i].push_back(candidate);
     }
 
-    const std::string cache_key =
-        !text_segment.original.empty() ? text_segment.original
-                                       : text_segment.content;
+    const std::string cache_key = !text_segment.original.empty()
+                                      ? text_segment.original
+                                      : text_segment.content;
     combo_cache_[cache_key] = segment_candidates[i];
   }
 
@@ -625,18 +616,17 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
   // 生成所有可能的组合
   std::vector<std::vector<const CachedCandidate*>> all_combinations;
   std::vector<const CachedCandidate*> current;
-  std::function<void(std::size_t)> generate =
-      [&](std::size_t index) {
-        if (index >= pointer_segments.size()) {
-          all_combinations.push_back(current);
-          return;
-        }
-        for (const CachedCandidate* candidate : pointer_segments[index]) {
-          current.push_back(candidate);
-          generate(index + 1);
-          current.pop_back();
-        }
-      };
+  std::function<void(std::size_t)> generate = [&](std::size_t index) {
+    if (index >= pointer_segments.size()) {
+      all_combinations.push_back(current);
+      return;
+    }
+    for (const CachedCandidate* candidate : pointer_segments[index]) {
+      current.push_back(candidate);
+      generate(index + 1);
+      current.pop_back();
+    }
+  };
 
   generate(0);
 
@@ -675,8 +665,8 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
     for (std::size_t idx = 0; idx < combination.size(); ++idx) {
       const CachedCandidate& candidate = *combination[idx];
       final_text += candidate.text;
-      final_preedit += candidate.preedit.empty() ? candidate.text
-                                                 : candidate.preedit;
+      final_preedit +=
+          candidate.preedit.empty() ? candidate.text : candidate.preedit;
 
       if (candidate.type == "abc") {
         const std::size_t start_pos = text_len_counter + 1;
@@ -745,9 +735,9 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
         comment = chinese_pos;
       }
 
-      auto candidate = New<SimpleCandidate>(
-          "rawenglish_combo", segment.start, candidate_end, final_text,
-          comment, final_preedit);
+      auto candidate =
+          New<SimpleCandidate>("rawenglish_combo", segment.start, candidate_end,
+                               final_text, comment, final_preedit);
       translation->Append(candidate);
       ++output_count;
       produced = true;

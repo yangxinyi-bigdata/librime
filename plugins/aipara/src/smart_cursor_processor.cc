@@ -521,9 +521,7 @@ void SmartCursorProcessor::ExitSearchMode(Context* context, Segment* segment) {
 
   context->set_option("search_move", false);
   context->set_property("search_move_str", "");
-  if (segment) {
-    segment->prompt = std::string(kSearchMovePrompt);
-  }
+
 }
 
 // 光标移动到下一个 ASCII 标点；若无则移到输入末尾。

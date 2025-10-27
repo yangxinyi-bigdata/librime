@@ -705,6 +705,14 @@ ProcessResult CloudInputProcessor::HandleRawEnglishInput(
     return kNoop;
   }
 
+  const std::string& input = context->input();
+  if (input.size() <= 1) {
+    AIPARA_LOG_DEBUG(logger_,
+                     "Raw English input length <= 1, skip converting key '" +
+                         key_repr + "'");
+    return kNoop;
+  }
+
   if (key_repr.rfind("Shift+", 0) == 0) {
     context->set_property("should_intercept_key_release", "1");
   }

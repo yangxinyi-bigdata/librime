@@ -6,7 +6,6 @@
 
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -35,10 +34,6 @@ class CloudAiFilterV2 : public Filter {
   void AttachTcpZmq(TcpZmq* client);
 
  private:
-  struct Behavior {
-    std::string prompt_chat;
-  };
-
   struct CandidateCache {
     std::string last_input;
     std::vector<std::string> cloud_candidates;
@@ -52,23 +47,12 @@ class CloudAiFilterV2 : public Filter {
     std::vector<std::pair<std::string, std::string>> ai_candidates;
   };
 
-  Behavior behavior_;
-  std::unordered_map<std::string, std::string> chat_triggers_;
-  std::unordered_map<std::string, std::string> chat_names_;
-
-  std::string schema_name_;
-  std::string shuru_schema_;
-  int max_cloud_candidates_ = 2;
-  int max_ai_candidates_ = 1;
-  std::string delimiter_ = " ";
-  std::string rawenglish_delimiter_before_;
-  std::string rawenglish_delimiter_after_;
-
   CandidateCache cache_;
   TcpZmq* tcp_zmq_ = nullptr;
 
   Logger logger_;
 
+  Config* ResolveConfig() const;
   void ClearCache();
   void SaveCache(const std::string& input,
                  const ParsedResult& parsed);
@@ -80,13 +64,16 @@ class CloudAiFilterV2 : public Filter {
       const Candidate* reference,
       size_t segment_start,
       size_t segment_end,
+      int max_cloud_candidates,
+      int max_ai_candidates,
       bool from_cache = false) const;
   std::vector<std::string> CollectLongCandidateTexts(
       const CandidateList& originals,
       size_t segment_end) const;
 
   void SetCloudConvertFlag(const Candidate* candidate,
-                           Context* context) const;
+                           Context* context,
+                           const std::string& delimiter) const;
 };
 
 }  // namespace rime::aipara

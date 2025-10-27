@@ -143,17 +143,6 @@ an<Translation> AiAssistantTranslator::Query(const string& input,
   return nullptr;
 }
 
-void AiAssistantTranslator::UpdateCurrentConfig(Config* config) {
-  if (!config) {
-    AIPARA_LOG_WARN(logger_,
-                    "UpdateCurrentConfig called with null config. "
-                    "Configuration is now read lazily.");
-    return;
-  }
-  AIPARA_LOG_INFO(logger_,
-                  "UpdateCurrentConfig invoked; ai_assistant_translator "
-                  "reads configuration directly on demand.");
-}
 
 // 绑定/解绑 TCP 同步器。
 void AiAssistantTranslator::AttachTcpZmq(TcpZmq* client) {

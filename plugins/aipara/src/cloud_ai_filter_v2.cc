@@ -13,8 +13,10 @@
 #include <algorithm>
 #include <chrono>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -80,6 +82,63 @@ std::string StripTrailingColon(std::string text) {
     text.pop_back();
   }
   return text;
+}
+
+std::string RequireConfigString(Config* config,
+                                const std::string& path) {
+  if (!config) {
+    throw std::runtime_error(
+        "schema config unavailable while reading '" + path + "'");
+  }
+  std::string value;
+  if (!config->GetString(path, &value) || value.empty()) {
+    throw std::runtime_error("missing string config '" + path + "'");
+  }
+  return value;
+}
+
+int RequireConfigInt(Config* config, const std::string& path) {
+  if (!config) {
+    throw std::runtime_error(
+        "schema config unavailable while reading '" + path + "'");
+  }
+  int value = 0;
+  if (!config->GetInt(path, &value)) {
+    throw std::runtime_error("missing integer config '" + path + "'");
+  }
+  return value;
+}
+
+std::unordered_map<std::string, std::string> RequirePromptValues(
+    Config* config,
+    const std::string& leaf) {
+  if (!config) {
+    throw std::runtime_error(
+        "schema config unavailable while reading ai prompts");
+  }
+  an<ConfigMap> prompts = config->GetMap("ai_assistant/ai_prompts");
+  if (!prompts) {
+    throw std::runtime_error(
+        "missing config 'ai_assistant/ai_prompts'");
+  }
+
+  std::unordered_map<std::string, std::string> values;
+  for (auto it = prompts->begin(); it != prompts->end(); ++it) {
+    const std::string& prompt_name = it->first;
+    std::string path = "ai_assistant/ai_prompts/" + prompt_name;
+    if (!leaf.empty()) {
+      path.append("/");
+      path.append(leaf);
+    }
+    std::string value;
+    if (!config->GetString(path, &value) || value.empty()) {
+      throw std::runtime_error(
+          "missing config '" + path + "' for prompt '" +
+          prompt_name + "'");
+    }
+    values.emplace(prompt_name, value);
+  }
+  return values;
 }
 
 an<FifoTranslation> MakeTranslation(
@@ -150,64 +209,106 @@ an<Translation> CloudAiFilterV2::Apply(an<Translation> translation,
     return translation;
   }
 
-  if (schema_name_.empty() && engine_->schema()) {
-    schema_name_ = engine_->schema()->schema_id();
-  }
-
   const an<Candidate>& first = originals.front();
-  SetCloudConvertFlag(first.get(), context);
+  const std::string schema_name =
+      engine_->schema() ? engine_->schema()->schema_id()
+                        : std::string();
+
+  Config* config = ResolveConfig();
+  std::string delimiter;
+  if (config) {
+    try {
+      const std::string delimiter_raw =
+          RequireConfigString(config, "speller/delimiter");
+      delimiter = delimiter_raw.substr(0, 1);
+    } catch (const std::exception& e) {
+      delimiter.clear();
+      context->set_property("cloud_convert_flag", "0");
+      AIPARA_LOG_ERROR(logger_,
+                       "Failed to read speller/delimiter: " +
+                           std::string(e.what()));
+    }
+  } else {
+    context->set_property("cloud_convert_flag", "0");
+    AIPARA_LOG_ERROR(logger_,
+                     "Schema config unavailable while resolving "
+                     "speller/delimiter.");
+  }
+  SetCloudConvertFlag(first.get(), context, delimiter);
 
   if (segment.HasTag("ai_prompt")) {
-    std::vector<std::string> prompt_triggers;
-    if (!behavior_.prompt_chat.empty()) {
-      const char prefix_char = behavior_.prompt_chat.front();
-      for (const auto& [trigger_name, trigger_prefix] : chat_triggers_) {
-        if (trigger_prefix.empty() ||
-            trigger_prefix.front() != prefix_char) {
-          continue;
+
+
+    try {
+      const std::string prompt_chat = RequireConfigString(
+          config, "ai_assistant/behavior/prompt_chat");
+      const auto chat_triggers =
+          RequirePromptValues(config, "chat_triggers");
+      const auto chat_names =
+          RequirePromptValues(config, "chat_names");
+
+      std::vector<std::string> prompt_triggers;
+      if (!prompt_chat.empty()) {
+        const char prefix_char = prompt_chat.front();
+        for (const auto& [trigger_name, trigger_prefix] :
+             chat_triggers) {
+          if (trigger_prefix.empty() ||
+              trigger_prefix.front() != prefix_char) {
+            continue;
+          }
+          auto it_name = chat_names.find(trigger_name);
+          if (it_name == chat_names.end()) {
+            throw std::runtime_error(
+                "missing chat_names entry for prompt '" +
+                trigger_name + "'");
+          }
+          std::string chat_name =
+              StripTrailingColon(it_name->second);
+          if (chat_name.empty()) {
+            continue;
+          }
+          prompt_triggers.push_back(trigger_prefix + chat_name);
         }
-        auto it_name = chat_names_.find(trigger_name);
-        if (it_name == chat_names_.end()) {
-          continue;
-        }
-        std::string chat_name = StripTrailingColon(it_name->second);
-        if (chat_name.empty()) {
-          continue;
-        }
-        prompt_triggers.push_back(trigger_prefix + chat_name);
+        std::sort(prompt_triggers.begin(), prompt_triggers.end());
       }
-      std::sort(prompt_triggers.begin(), prompt_triggers.end());
+
+      const std::size_t max_rounds = prompt_triggers.size() / 2;
+      std::size_t current_round = 0;
+      std::vector<an<Candidate>> rewritten;
+      rewritten.reserve(originals.size());
+
+      for (std::size_t index = 0; index < originals.size();
+           ++index) {
+        const an<Candidate>& cand = originals[index];
+        std::string comment;
+        if (current_round < max_rounds) {
+          const std::size_t base = current_round * 2;
+          comment.assign(" ");
+          comment.append(prompt_triggers[base]);
+          if (base + 1 < prompt_triggers.size()) {
+            comment.append("  ");
+            comment.append(prompt_triggers[base + 1]);
+          }
+          ++current_round;
+        }
+
+        if (!comment.empty()) {
+          auto shadow = New<ShadowCandidate>(
+              cand, cand->type(), std::string(), comment);
+          rewritten.push_back(shadow);
+        } else {
+          rewritten.push_back(cand);
+        }
+      }
+
+      return MakeTranslationFromOriginals(rewritten);
+    } catch (const std::exception& e) {
+      AIPARA_LOG_ERROR(
+          logger_,
+          "Failed to construct ai_prompt candidates: " +
+              std::string(e.what()));
+      return MakeTranslationFromOriginals(originals);
     }
-
-    const std::size_t max_rounds = prompt_triggers.size() / 2;
-    std::size_t current_round = 0;
-    std::vector<an<Candidate>> rewritten;
-    rewritten.reserve(originals.size());
-
-    for (std::size_t index = 0; index < originals.size(); ++index) {
-      const an<Candidate>& cand = originals[index];
-      std::string comment;
-      if (current_round < max_rounds) {
-        const std::size_t base = current_round * 2;
-        comment.assign(" ");
-        comment.append(prompt_triggers[base]);
-        if (base + 1 < prompt_triggers.size()) {
-          comment.append("  ");
-          comment.append(prompt_triggers[base + 1]);
-        }
-        ++current_round;
-      }
-
-      if (!comment.empty()) {
-        auto shadow = New<ShadowCandidate>(cand, cand->type(),
-                                           std::string(), comment);
-        rewritten.push_back(shadow);
-      } else {
-        rewritten.push_back(cand);
-      }
-    }
-
-    return MakeTranslationFromOriginals(rewritten);
   }
 
   const std::string cand_type = first->type();
@@ -234,6 +335,28 @@ an<Translation> CloudAiFilterV2::Apply(an<Translation> translation,
   const std::string segment_input =
       input.substr(seg_start, seg_end - seg_start);
 
+  std::optional<int> max_cloud_candidates;
+  std::optional<int> max_ai_candidates;
+  auto build_candidates_safe =
+      [&](const ParsedResult& parsed, bool from_cache)
+          -> std::vector<an<Candidate>> {
+        if (!config) {
+          throw std::runtime_error(
+              "schema config unavailable while building candidates");
+        }
+        if (!max_cloud_candidates) {
+          max_cloud_candidates = RequireConfigInt(
+              config, "cloud_ai_filter/max_cloud_candidates");
+        }
+        if (!max_ai_candidates) {
+          max_ai_candidates = RequireConfigInt(
+              config, "cloud_ai_filter/max_ai_candidates");
+        }
+        return BuildCandidatesFromResult(
+            parsed, first.get(), seg_start, seg_end,
+            *max_cloud_candidates, *max_ai_candidates, from_cache);
+      };
+
   if (cloud_convert == "1") {
     if (!tcp_zmq_) {
       AttachTcpZmq(AcquireGlobalTcpZmq());
@@ -241,12 +364,37 @@ an<Translation> CloudAiFilterV2::Apply(an<Translation> translation,
     std::vector<std::string> long_texts =
         CollectLongCandidateTexts(originals, seg_end);
     if (tcp_zmq_) {
-      const bool send_success = tcp_zmq_->SendConvertRequest(
-          schema_name_, shuru_schema_, segment_input, long_texts);
-      if (send_success) {
-        context->set_property("get_cloud_stream", "starting");
+      bool request_attempted = false;
+      bool send_success = false;
+      if (config) {
+        try {
+          const std::string shuru_schema = RequireConfigString(
+              config, "schema/my_shuru_schema");
+          request_attempted = true;
+          send_success = tcp_zmq_->SendConvertRequest(
+              schema_name, shuru_schema, segment_input,
+              long_texts);
+        } catch (const std::exception& e) {
+          AIPARA_LOG_ERROR(
+              logger_,
+              "Failed to send cloud convert request: " +
+                  std::string(e.what()));
+          context->set_property("get_cloud_stream", "error");
+        }
       } else {
+        AIPARA_LOG_ERROR(
+            logger_,
+            "Schema config unavailable while sending cloud "
+            "convert request.");
         context->set_property("get_cloud_stream", "error");
+      }
+
+      if (request_attempted) {
+        if (send_success) {
+          context->set_property("get_cloud_stream", "starting");
+        } else {
+          context->set_property("get_cloud_stream", "error");
+        }
       }
     }
   }
@@ -262,8 +410,15 @@ an<Translation> CloudAiFilterV2::Apply(an<Translation> translation,
         const ParsedResult parsed =
             ParseConvertResult(*stream_result.data);
         SaveCache(segment_input, parsed);
-        cloud_candidates = BuildCandidatesFromResult(
-            parsed, first.get(), seg_start, seg_end, false);
+        try {
+          cloud_candidates =
+              build_candidates_safe(parsed, false);
+        } catch (const std::exception& e) {
+          AIPARA_LOG_ERROR(
+              logger_,
+              "Failed to build candidates from stream: " +
+                  std::string(e.what()));
+        }
 
         if (stream_result.is_final) {
           context->set_property("get_cloud_stream", "stop");
@@ -278,8 +433,15 @@ an<Translation> CloudAiFilterV2::Apply(an<Translation> translation,
         ClearCache();
       } else {
         if (auto cached = GetCache(segment_input)) {
-          cloud_candidates = BuildCandidatesFromResult(
-              *cached, first.get(), seg_start, seg_end, true);
+          try {
+            cloud_candidates =
+                build_candidates_safe(*cached, true);
+          } catch (const std::exception& e) {
+            AIPARA_LOG_ERROR(
+                logger_,
+                "Failed to build candidates from cache: " +
+                    std::string(e.what()));
+          }
         }
       }
     }
@@ -296,75 +458,32 @@ an<Translation> CloudAiFilterV2::Apply(an<Translation> translation,
 }
 
 void CloudAiFilterV2::UpdateCurrentConfig(Config* config) {
-  chat_triggers_.clear();
-  chat_names_.clear();
-
   if (!config) {
-    behavior_.prompt_chat.clear();
-    shuru_schema_.clear();
-    max_cloud_candidates_ = 2;
-    max_ai_candidates_ = 1;
-    delimiter_ = " ";
-    rawenglish_delimiter_before_.clear();
-    rawenglish_delimiter_after_.clear();
-    ClearCache();
-    return;
-  }
-
-  config->GetString("ai_assistant/behavior/prompt_chat",
-                    &behavior_.prompt_chat);
-  config->GetString("schema/name", &schema_name_);
-  config->GetString("schema/my_shuru_schema", &shuru_schema_);
-
-  if (!config->GetInt("cloud_ai_filter/max_cloud_candidates",
-                      &max_cloud_candidates_)) {
-    max_cloud_candidates_ = 2;
-  }
-  if (!config->GetInt("cloud_ai_filter/max_ai_candidates",
-                      &max_ai_candidates_)) {
-    max_ai_candidates_ = 1;
-  }
-
-  std::string delimiter;
-  if (config->GetString("speller/delimiter", &delimiter) &&
-      !delimiter.empty()) {
-    delimiter_ = delimiter.substr(0, 1);
+    AIPARA_LOG_INFO(
+        logger_,
+        "UpdateCurrentConfig called with null config. "
+        "cloud_ai_filter_v2 now reads configuration on demand.");
   } else {
-    delimiter_ = " ";
+    AIPARA_LOG_INFO(
+        logger_,
+        "UpdateCurrentConfig invoked; cloud_ai_filter_v2 reads "
+        "configuration lazily.");
   }
-
-  config->GetString("cloud_ai_filter/rawenglish_delimiter_before",
-                    &rawenglish_delimiter_before_);
-  config->GetString("cloud_ai_filter/rawenglish_delimiter_after",
-                    &rawenglish_delimiter_after_);
-
-  if (an<ConfigMap> prompts =
-          config->GetMap("ai_assistant/ai_prompts")) {
-    for (auto it = prompts->begin(); it != prompts->end(); ++it) {
-      const std::string& trigger_name = it->first;
-      std::string trigger_value;
-      if (config->GetString("ai_assistant/ai_prompts/" + trigger_name +
-                                "/chat_triggers",
-                            &trigger_value) &&
-          !trigger_value.empty()) {
-        chat_triggers_[trigger_name] = trigger_value;
-      }
-
-      std::string chat_name;
-      if (config->GetString("ai_assistant/ai_prompts/" + trigger_name +
-                                "/chat_names",
-                            &chat_name) &&
-          !chat_name.empty()) {
-        chat_names_[trigger_name] = chat_name;
-      }
-    }
-  }
-
   ClearCache();
 }
 
 void CloudAiFilterV2::AttachTcpZmq(TcpZmq* client) {
   tcp_zmq_ = client;
+}
+
+Config* CloudAiFilterV2::ResolveConfig() const {
+  if (!engine_) {
+    return nullptr;
+  }
+  if (auto* schema = engine_->schema()) {
+    return schema->config();
+  }
+  return nullptr;
 }
 
 void CloudAiFilterV2::ClearCache() {
@@ -470,15 +589,17 @@ std::vector<an<Candidate>> CloudAiFilterV2::BuildCandidatesFromResult(
     const Candidate* reference,
     size_t segment_start,
     size_t segment_end,
+    int max_cloud_candidates,
+    int max_ai_candidates,
     bool from_cache) const {
   std::vector<an<Candidate>> output;
   const std::string preedit =
       reference ? reference->preedit() : std::string();
 
   const std::size_t cloud_limit =
-      static_cast<std::size_t>(std::max(0, max_cloud_candidates_));
+      static_cast<std::size_t>(std::max(0, max_cloud_candidates));
   const std::size_t ai_limit =
-      static_cast<std::size_t>(std::max(0, max_ai_candidates_));
+      static_cast<std::size_t>(std::max(0, max_ai_candidates));
 
   for (std::size_t i = 0;
        i < result.cloud_candidates.size() && i < cloud_limit; ++i) {
@@ -532,11 +653,13 @@ std::vector<std::string> CloudAiFilterV2::CollectLongCandidateTexts(
 }
 
 void CloudAiFilterV2::SetCloudConvertFlag(const Candidate* candidate,
-                                          Context* context) const {
+                                          Context* context,
+                                          const std::string& delimiter) const {
   if (!candidate || !context) {
     return;
   }
-  if (delimiter_.empty()) {
+  if (delimiter.empty()) {
+    context->set_property("cloud_convert_flag", "0");
     return;
   }
 
@@ -549,9 +672,9 @@ void CloudAiFilterV2::SetCloudConvertFlag(const Candidate* candidate,
 
   std::size_t count = 0;
   std::size_t pos = 0;
-  while ((pos = preedit.find(delimiter_, pos)) != std::string::npos) {
+  while ((pos = preedit.find(delimiter, pos)) != std::string::npos) {
     ++count;
-    pos += delimiter_.size();
+    pos += delimiter.size();
   }
 
   const bool composing = context->IsComposing();
