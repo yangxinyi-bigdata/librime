@@ -4,11 +4,15 @@
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <cstring>
+#include <fstream>
 #include <iomanip>
+#include <system_error>
 #include <random>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -54,6 +58,39 @@
 
 namespace rime::aipara {
 namespace {
+
+namespace fs = std::filesystem;
+
+std::string TrimString(std::string_view text) {
+  const auto begin = text.find_first_not_of(" \t\r\n");
+  if (begin == std::string_view::npos) {
+    return std::string();
+  }
+  const auto end = text.find_last_not_of(" \t\r\n");
+  return std::string(text.substr(begin, end - begin + 1));
+}
+
+std::optional<std::string> ExtractCurveField(const std::string& content,
+                                             std::string_view field) {
+  const std::string pattern =
+      std::string(field) + " = \"";
+  size_t pos = content.find(pattern);
+  if (pos == std::string::npos) {
+    return std::nullopt;
+  }
+  pos += pattern.size();
+  size_t end = content.find('"', pos);
+  if (end == std::string::npos || end < pos) {
+    return std::nullopt;
+  }
+  std::string_view content_view(content);
+  std::string_view slice = content_view.substr(pos, end - pos);
+  return TrimString(slice);
+}
+
+bool IsValidCurveKey(const std::string& key) {
+  return key.size() == 40;
+}
 
 constexpr int kDefaultRimePort = 10089;
 constexpr int kDefaultAiPort = 10090;
@@ -148,12 +185,14 @@ TcpZmq::TcpZmq()
   rime_state_.default_snd_timeout_ms = 0;
   rime_state_.timeout_seconds = 0;
   rime_state_.health_check_interval_ms = 5000;
+  rime_state_.handshake_timeout_ms = 4000;
 
   ai_convert_.port = kDefaultAiPort;
   ai_convert_.connect_retry_interval_ms = 5000;
   ai_convert_.default_rcv_timeout_ms = 100;
   ai_convert_.default_snd_timeout_ms = 100;
   ai_convert_.timeout_seconds = 0;
+  ai_convert_.handshake_timeout_ms = 6000;
 }
 
 TcpZmq::~TcpZmq() {
@@ -288,11 +327,16 @@ void TcpZmq::CloseSocket(void*& socket) {
 void TcpZmq::ResetSocketState(SocketState& state, bool reset_queue) {
   CloseSocket(state.socket);
   state.is_connected = false;
+  state.connect_pending = false;
+  state.handshake_logged = false;
   state.last_error.clear();
   state.last_send_at = 0;
   state.last_recv_at = 0;
   state.suspended_until = 0;
   state.write_failure_count = 0;
+  state.curve_version_applied = 0;
+  state.last_connect_attempt = 0;
+  state.last_endpoint.clear();
   if (reset_queue) {
     state.recv_queue.clear();
   }
@@ -304,6 +348,14 @@ void TcpZmq::ConfigureSocketDefaults(SocketState& state) {
   }
   const int linger = 0;
   zmq_setsockopt(state.socket, ZMQ_LINGER, &linger, sizeof(linger));
+  const int immediate = 1;
+  zmq_setsockopt(state.socket, ZMQ_IMMEDIATE, &immediate,
+                 sizeof(immediate));
+  if (state.handshake_timeout_ms > 0) {
+    zmq_setsockopt(state.socket, ZMQ_HANDSHAKE_IVL,
+                   &state.handshake_timeout_ms,
+                   sizeof(state.handshake_timeout_ms));
+  }
   if (state.default_snd_timeout_ms >= 0) {
     SetSocketTimeout(state.socket, ZMQ_SNDTIMEO,
                      state.default_snd_timeout_ms);
@@ -362,6 +414,7 @@ TcpZmq::ReceiveResult TcpZmq::ReceiveSocketPayloads(void* socket, int flags) {
 }
 
 int TcpZmq::DrainSocketImmediate(SocketState& state,
+                                 const char* channel_name,
                                  std::string* fatal_error) {
   if (!state.socket) {
     return 0;
@@ -370,6 +423,7 @@ int TcpZmq::DrainSocketImmediate(SocketState& state,
   while (true) {
     ReceiveResult recv = ReceiveSocketPayloads(state.socket, ZMQ_DONTWAIT);
     if (recv.ok) {
+      MarkSocketHandshakeSuccess(state, channel_name);
       for (const auto& message : recv.messages) {
         state.recv_queue.emplace_back(message);
         drained += static_cast<int>(message.size());
@@ -419,6 +473,284 @@ std::vector<std::string> TcpZmq::SplitPayload(const std::string& payload) {
 bool TcpZmq::IsTemporaryError(int error_code) {
   return error_code == EAGAIN || error_code == EINTR ||
          error_code == ETIMEDOUT;
+}
+
+void TcpZmq::RefreshCurveConfig(rime::Config* config) {
+  if (!config) {
+    return;
+  }
+
+  bool enabled_flag = false;
+  const bool has_enabled =
+      config->GetBool("curve/enabled", &enabled_flag);
+  std::string cert_dir_raw;
+  config->GetString("curve/curve_cert_dir", &cert_dir_raw);
+  std::string cert_dir = TrimString(cert_dir_raw);
+
+  const bool new_enabled =
+      has_enabled && enabled_flag && !cert_dir.empty();
+
+  bool changed = !curve_settings_.configured ||
+                 curve_settings_.enabled != new_enabled ||
+                 curve_settings_.cert_dir != cert_dir;
+
+  if (!curve_settings_.configured && !has_enabled &&
+      cert_dir.empty()) {
+    changed = true;
+  }
+
+  if (!changed) {
+    return;
+  }
+
+  curve_settings_.configured = true;
+  curve_settings_.enabled = new_enabled;
+  curve_settings_.cert_dir = cert_dir;
+  curve_settings_.keys_loaded = false;
+  curve_settings_.last_error.clear();
+  ++curve_settings_.version;
+
+  rime_state_.curve_version_applied = 0;
+  ai_convert_.curve_version_applied = 0;
+
+  if (!curve_settings_.enabled) {
+    curve_settings_.server_public_key.clear();
+    curve_settings_.client_public_key.clear();
+    curve_settings_.client_secret_key.clear();
+    curve_settings_.keys_loaded = true;
+    AIPARA_LOG_INFO(logger_, "CurveZMQ 加密已禁用");
+  } else {
+    AIPARA_LOG_INFO(
+        logger_,
+        "CurveZMQ 加密已启用，证书目录: " +
+            curve_settings_.cert_dir);
+    if (EnsureCurveKeysLoaded()) {
+      AIPARA_LOG_INFO(logger_,
+                      "CurveZMQ 密钥加载成功");
+    } else {
+      AIPARA_LOG_ERROR(
+          logger_,
+          "CurveZMQ 密钥加载失败: " +
+              (curve_settings_.last_error.empty()
+                   ? std::string("unknown_error")
+                   : curve_settings_.last_error));
+    }
+  }
+
+  if (is_initialized_) {
+    ForceReconnect();
+  }
+}
+
+bool TcpZmq::EnsureCurveKeysLoaded() {
+  if (!curve_settings_.enabled) {
+    return true;
+  }
+  if (curve_settings_.keys_loaded) {
+    return true;
+  }
+  return LoadCurveKeys();
+}
+
+bool TcpZmq::LoadCurveKeys() {
+  curve_settings_.keys_loaded = false;
+
+  if (!curve_settings_.enabled) {
+    curve_settings_.last_error.clear();
+    curve_settings_.keys_loaded = true;
+    return true;
+  }
+
+  if (curve_settings_.cert_dir.empty()) {
+    curve_settings_.last_error =
+        "curve_cert_dir 未配置或为空";
+    return false;
+  }
+
+  std::error_code ec;
+  fs::path cert_dir_path(curve_settings_.cert_dir);
+  if (!fs::exists(cert_dir_path, ec)) {
+    curve_settings_.last_error =
+        "证书目录不存在: " + cert_dir_path.string();
+    return false;
+  }
+  if (!fs::is_directory(cert_dir_path, ec)) {
+    curve_settings_.last_error =
+        "证书路径不是目录: " + cert_dir_path.string();
+    return false;
+  }
+
+  auto read_file = [&](const fs::path& path,
+                       std::string* output) -> bool {
+    std::ifstream stream(path, std::ios::in);
+    if (!stream) {
+      curve_settings_.last_error =
+          "无法读取密钥文件: " + path.string();
+      return false;
+    }
+    std::ostringstream buffer;
+    buffer << stream.rdbuf();
+    *output = buffer.str();
+    return true;
+  };
+
+  std::string client_public_content;
+  std::string client_secret_content;
+  std::string server_public_content;
+
+  if (!read_file(cert_dir_path / "client.key",
+                 &client_public_content)) {
+    return false;
+  }
+  if (!read_file(cert_dir_path / "client_secret.key",
+                 &client_secret_content)) {
+    return false;
+  }
+  if (!read_file(cert_dir_path / "server_public.key",
+                 &server_public_content)) {
+    return false;
+  }
+
+  auto client_public_key =
+      ExtractCurveField(client_public_content, "public-key");
+  auto client_secret_key =
+      ExtractCurveField(client_secret_content, "secret-key");
+  auto client_secret_public =
+      ExtractCurveField(client_secret_content, "public-key");
+  auto server_public_key =
+      ExtractCurveField(server_public_content, "public-key");
+
+  if (!client_secret_key) {
+    curve_settings_.last_error =
+        "client_secret.key 缺少 secret-key 字段";
+    return false;
+  }
+  if (!client_public_key && !client_secret_public) {
+    curve_settings_.last_error =
+        "无法提取客户端公钥";
+    return false;
+  }
+  if (!server_public_key) {
+    curve_settings_.last_error =
+        "server_public.key 缺少 public-key 字段";
+    return false;
+  }
+
+  const std::string client_public =
+      client_secret_public ? *client_secret_public
+                           : *client_public_key;
+
+  if (!IsValidCurveKey(client_public)) {
+    curve_settings_.last_error =
+        "客户端公钥长度非法";
+    return false;
+  }
+  if (!IsValidCurveKey(*client_secret_key)) {
+    curve_settings_.last_error =
+        "客户端私钥长度非法";
+    return false;
+  }
+  if (!IsValidCurveKey(*server_public_key)) {
+    curve_settings_.last_error =
+        "服务端公钥长度非法";
+    return false;
+  }
+
+  curve_settings_.client_public_key = client_public;
+  curve_settings_.client_secret_key = *client_secret_key;
+  curve_settings_.server_public_key = *server_public_key;
+  curve_settings_.keys_loaded = true;
+  curve_settings_.last_error.clear();
+
+  return true;
+}
+
+bool TcpZmq::ConfigureCurveForSocket(SocketState& state) {
+  if (!state.socket) {
+    return false;
+  }
+
+  if (!curve_settings_.configured) {
+    state.curve_version_applied = curve_settings_.version;
+    return true;
+  }
+  if (!curve_settings_.enabled) {
+    state.curve_version_applied = curve_settings_.version;
+    return true;
+  }
+  if (state.curve_version_applied == curve_settings_.version &&
+      curve_settings_.keys_loaded) {
+    return true;
+  }
+
+  if (!EnsureCurveKeysLoaded()) {
+    return false;
+  }
+
+  curve_settings_.last_error.clear();
+
+  if (zmq_setsockopt(state.socket, ZMQ_CURVE_SERVERKEY,
+                     curve_settings_.server_public_key.data(),
+                     static_cast<int>(
+                         curve_settings_.server_public_key.size())) !=
+      0) {
+    curve_settings_.last_error =
+        std::string("配置 ZMQ_CURVE_SERVERKEY 失败: ") +
+        zmq_strerror(errno);
+    return false;
+  }
+  if (zmq_setsockopt(state.socket, ZMQ_CURVE_PUBLICKEY,
+                     curve_settings_.client_public_key.data(),
+                     static_cast<int>(
+                         curve_settings_.client_public_key.size())) !=
+      0) {
+    curve_settings_.last_error =
+        std::string("配置 ZMQ_CURVE_PUBLICKEY 失败: ") +
+        zmq_strerror(errno);
+    return false;
+  }
+  if (zmq_setsockopt(state.socket, ZMQ_CURVE_SECRETKEY,
+                     curve_settings_.client_secret_key.data(),
+                     static_cast<int>(
+                         curve_settings_.client_secret_key.size())) !=
+      0) {
+    curve_settings_.last_error =
+        std::string("配置 ZMQ_CURVE_SECRETKEY 失败: ") +
+        zmq_strerror(errno);
+    return false;
+  }
+
+  state.curve_version_applied = curve_settings_.version;
+  return true;
+}
+
+void TcpZmq::MarkSocketHandshakeSuccess(SocketState& state,
+                                        const char* channel_name) {
+  if (state.is_connected) {
+    return;
+  }
+  state.is_connected = true;
+  state.connect_pending = false;
+  state.connection_failures = 0;
+  state.write_failure_count = 0;
+  state.last_error.clear();
+  state.handshake_logged = true;
+  std::string endpoint = state.last_endpoint;
+  if (endpoint.empty()) {
+    endpoint = "tcp://" + host_ + ":" + std::to_string(state.port);
+  }
+  std::string identity_info;
+  if (!state.identity.empty()) {
+    identity_info = " identity=" + state.identity;
+  }
+  if (channel_name && *channel_name) {
+    AIPARA_LOG_INFO(logger_,
+                    std::string(channel_name) + " 握手成功: " + endpoint +
+                        identity_info);
+  } else {
+    AIPARA_LOG_INFO(logger_,
+                    "ZeroMQ 握手成功: " + endpoint + identity_info);
+  }
 }
 
 int TcpZmq::ToMilliseconds(std::optional<double> timeout_seconds,
@@ -476,8 +808,29 @@ std::int64_t TcpZmq::NowMs() {
 
 bool TcpZmq::ConnectToRimeServer() {
   SocketState& state = rime_state_;
-  if (state.socket && state.is_connected) {
-    return true;
+  const std::int64_t now = NowMs();
+
+  if (state.socket) {
+    if (state.is_connected) {
+      return true;
+    }
+    if (state.connect_pending) {
+      if (state.handshake_timeout_ms > 0 &&
+          now - state.last_connect_attempt >
+              state.handshake_timeout_ms) {
+        AIPARA_LOG_WARN(
+            logger_,
+            "Rime状态ZeroMQ 握手超时，准备重新连接: " +
+                (state.last_endpoint.empty()
+                     ? std::string("tcp://") + host_ + ":" +
+                           std::to_string(state.port)
+                     : state.last_endpoint));
+        state.connection_failures++;
+        ResetSocketState(state);
+      } else {
+        return true;
+      }
+    }
   }
 
   if (!EnsureContext()) {
@@ -486,16 +839,15 @@ bool TcpZmq::ConnectToRimeServer() {
     return false;
   }
 
-  const std::int64_t now = NowMs();
   if (state.suspended_until > 0 && now < state.suspended_until) {
     return false;
   }
   if (now - state.last_connect_attempt < state.connect_retry_interval_ms) {
-    return state.socket != nullptr && state.is_connected;
+    return state.socket != nullptr;
   }
-  state.last_connect_attempt = now;
 
   ResetSocketState(state);
+  state.last_connect_attempt = now;
 
   state.socket = zmq_socket(context_, ZMQ_DEALER);
   if (!state.socket) {
@@ -509,11 +861,25 @@ bool TcpZmq::ConnectToRimeServer() {
   const std::string identity = client_id_ + "-rime";
   zmq_setsockopt(state.socket, ZMQ_IDENTITY, identity.data(),
                  static_cast<int>(identity.size()));
+  state.identity = identity;
+
+  if (!ConfigureCurveForSocket(state)) {
+    state.connection_failures++;
+    state.last_error = curve_settings_.last_error.empty()
+                           ? "curve_security_not_ready"
+                           : curve_settings_.last_error;
+    AIPARA_LOG_ERROR(
+        logger_,
+        "配置 Rime 通道 CurveZMQ 安全失败: " + state.last_error);
+    ResetSocketState(state, true);
+    return false;
+  }
 
   ConfigureSocketDefaults(state);
 
   const std::string endpoint =
       "tcp://" + host_ + ":" + std::to_string(state.port);
+  state.last_endpoint = endpoint;
   if (zmq_connect(state.socket, endpoint.c_str()) != 0) {
     state.connection_failures++;
     state.last_error = zmq_strerror(errno);
@@ -523,27 +889,44 @@ bool TcpZmq::ConnectToRimeServer() {
     return false;
   }
 
-  state.is_connected = true;
-  state.connection_failures = 0;
-  state.write_failure_count = 0;
-  state.recv_queue.clear();
+  state.connect_pending = true;
   state.last_error.clear();
-
+  state.handshake_logged = false;
   AIPARA_LOG_DEBUG(logger_,
-                   "Rime状态ZeroMQ连接建立成功: " + endpoint +
+                   "Rime状态ZeroMQ 发起连接: " + endpoint +
                        " identity=" + identity);
   return true;
 }
 
 bool TcpZmq::ConnectToAiServer() {
   SocketState& state = ai_convert_;
-  if (state.socket && state.is_connected) {
-    return true;
+  const std::int64_t now = NowMs();
+
+  if (state.socket) {
+    if (state.is_connected) {
+      return true;
+    }
+    if (state.connect_pending) {
+      if (state.handshake_timeout_ms > 0 &&
+          now - state.last_connect_attempt >
+              state.handshake_timeout_ms) {
+        AIPARA_LOG_WARN(
+            logger_,
+            "AI转换ZeroMQ 握手超时，准备重新连接: " +
+                (state.last_endpoint.empty()
+                     ? std::string("tcp://") + host_ + ":" +
+                           std::to_string(state.port)
+                     : state.last_endpoint));
+        state.connection_failures++;
+        ResetSocketState(state);
+      } else {
+        return true;
+      }
+    }
   }
 
-  const std::int64_t now = NowMs();
   if (now - state.last_connect_attempt < state.connect_retry_interval_ms) {
-    return state.socket != nullptr && state.is_connected;
+    return state.socket != nullptr;
   }
   state.last_connect_attempt = now;
 
@@ -567,10 +950,25 @@ bool TcpZmq::ConnectToAiServer() {
   const std::string identity = EnsureAiIdentity();
   zmq_setsockopt(state.socket, ZMQ_IDENTITY, identity.data(),
                  static_cast<int>(identity.size()));
+  state.identity = identity;
+
+  if (!ConfigureCurveForSocket(state)) {
+    state.connection_failures++;
+    state.last_error = curve_settings_.last_error.empty()
+                           ? "curve_security_not_ready"
+                           : curve_settings_.last_error;
+    AIPARA_LOG_ERROR(
+        logger_,
+        "配置 AI 通道 CurveZMQ 安全失败: " + state.last_error);
+    ResetSocketState(state, true);
+    return false;
+  }
+
   ConfigureSocketDefaults(state);
 
   const std::string endpoint =
       "tcp://" + host_ + ":" + std::to_string(state.port);
+  state.last_endpoint = endpoint;
   if (zmq_connect(state.socket, endpoint.c_str()) != 0) {
     state.connection_failures++;
     state.last_error = zmq_strerror(errno);
@@ -580,14 +978,11 @@ bool TcpZmq::ConnectToAiServer() {
     return false;
   }
 
-  state.is_connected = true;
-  state.connection_failures = 0;
-  state.write_failure_count = 0;
-  state.recv_queue.clear();
+  state.connect_pending = true;
   state.last_error.clear();
-
+  state.handshake_logged = false;
   AIPARA_LOG_DEBUG(logger_,
-                   "AI转换ZeroMQ连接建立成功: " + endpoint +
+                   "AI转换ZeroMQ 发起连接: " + endpoint +
                        " identity=" + identity);
   return true;
 }
@@ -631,7 +1026,8 @@ bool TcpZmq::WriteToRimeSocket(const std::string& data) {
 
   SocketState& state = rime_state_;
   std::string fatal_error;
-  const int drained = DrainSocketImmediate(state, &fatal_error);
+  const int drained =
+      DrainSocketImmediate(state, "Rime状态ZeroMQ", &fatal_error);
   if (!fatal_error.empty()) {
     state.last_error = fatal_error;
     AIPARA_LOG_WARN(
@@ -652,9 +1048,11 @@ bool TcpZmq::WriteToRimeSocket(const std::string& data) {
     state.write_failure_count = 0;
     state.last_error.clear();
     state.last_send_at = NowMs();
+    MarkSocketHandshakeSuccess(state, "Rime状态ZeroMQ");
 
     std::string fatal_after;
-    const int drained_after = DrainSocketImmediate(state, &fatal_after);
+    const int drained_after =
+        DrainSocketImmediate(state, "Rime状态ZeroMQ", &fatal_after);
     if (!fatal_after.empty()) {
       state.last_error = fatal_after;
       AIPARA_LOG_WARN(
@@ -676,6 +1074,11 @@ bool TcpZmq::WriteToRimeSocket(const std::string& data) {
   state.last_error = err_str;
 
   if (IsTemporaryError(err)) {
+    if (state.connect_pending && !state.is_connected) {
+      AIPARA_LOG_DEBUG(
+          logger_,
+          "Rime状态ZeroMQ 握手未就绪，发送被延迟: " + err_str);
+    }
     if (state.write_failure_count == 1 ||
         state.write_failure_count % state.max_failure_count == 0) {
       AIPARA_LOG_WARN(
@@ -713,16 +1116,33 @@ bool TcpZmq::WriteToAiSocket(const std::string& data) {
   if (rc >= 0) {
     state.write_failure_count = 0;
     state.last_error.clear();
+    state.last_send_at = NowMs();
+    MarkSocketHandshakeSuccess(state, "AI转换ZeroMQ");
     AIPARA_LOG_DEBUG(logger_, "AI接口数据发送成功");
     return true;
   }
 
   const int err = zmq_errno();
+  const std::string err_str = zmq_strerror(err);
   state.write_failure_count++;
-  state.last_error = zmq_strerror(err);
+  state.last_error = err_str;
+
+  if (IsTemporaryError(err)) {
+    if (state.connect_pending && !state.is_connected) {
+      AIPARA_LOG_DEBUG(logger_,
+                       "AI转换ZeroMQ 握手未就绪，发送被延迟: " + err_str);
+    }
+    if (state.write_failure_count >= state.max_failure_count) {
+      AIPARA_LOG_WARN(logger_,
+                      "AI转换通道连续发送失败，重新建立连接");
+      DisconnectFromAiServer();
+      state.write_failure_count = 0;
+    }
+    return false;
+  }
+
   AIPARA_LOG_ERROR(
-      logger_, "AI转换服务ZeroMQ写入失败: " + state.last_error +
-                   " (失败次数: " +
+      logger_, "AI转换服务ZeroMQ写入失败: " + err_str + " (失败次数: " +
                    std::to_string(state.write_failure_count) + ")");
   DisconnectFromAiServer();
   return false;
@@ -739,7 +1159,8 @@ std::optional<std::string> TcpZmq::ReadFromRimeSocket(
   }
 
   std::string fatal_before;
-  const int drained = DrainSocketImmediate(state, &fatal_before);
+  const int drained =
+      DrainSocketImmediate(state, "Rime状态ZeroMQ", &fatal_before);
   if (!fatal_before.empty()) {
     state.last_error = fatal_before;
     AIPARA_LOG_WARN(logger_,
@@ -769,6 +1190,7 @@ std::optional<std::string> TcpZmq::ReadFromRimeSocket(
   }
 
   if (result.ok && !result.messages.empty()) {
+    MarkSocketHandshakeSuccess(state, "Rime状态ZeroMQ");
     if (result.messages.size() > 1) {
       for (size_t i = 1; i < result.messages.size(); ++i) {
         state.recv_queue.emplace_back(result.messages[i]);
@@ -826,6 +1248,7 @@ std::optional<std::string> TcpZmq::ReadFromAiSocket(
   }
 
   if (result.ok && !result.messages.empty()) {
+    MarkSocketHandshakeSuccess(state, "AI转换ZeroMQ");
     if (result.messages.size() > 1) {
       for (size_t i = 1; i < result.messages.size(); ++i) {
         state.recv_queue.emplace_back(result.messages[i]);
@@ -1392,6 +1815,9 @@ bool TcpZmq::SyncWithServer(
   if (!engine || !engine->context()) {
     return false;
   }
+  if (auto* schema = engine->schema()) {
+    RefreshCurveConfig(schema->config());
+  }
   rime::Context* context = engine->context();
 
   const std::int64_t current_time = NowMs();
@@ -1512,6 +1938,36 @@ bool TcpZmq::SendConvertRequest(
   const double timeout =
       timeout_seconds.value_or(ai_convert_.timeout_seconds);
 
+  SocketState& ai_state = ai_convert_;
+  if (!ai_state.recv_queue.empty()) {
+    AIPARA_LOG_DEBUG(
+        logger_, "清理AI转换队列中残留的消息数量: " +
+                     std::to_string(ai_state.recv_queue.size()));
+    ai_state.recv_queue.clear();
+  }
+  std::string fatal_error;
+  const int drained_bytes =
+      DrainSocketImmediate(ai_state, "AI转换ZeroMQ", &fatal_error);
+  if (!fatal_error.empty()) {
+    AIPARA_LOG_WARN(
+        logger_,
+        "清理AI转换残留数据时检测到读取错误: " + fatal_error);
+    DisconnectFromAiServer();
+  }
+  if (!ai_state.recv_queue.empty()) {
+    AIPARA_LOG_DEBUG(
+        logger_, "丢弃AI转换通道立即读取到的残留消息数量: " +
+                     std::to_string(ai_state.recv_queue.size()));
+    ai_state.recv_queue.clear();
+  }
+  if (drained_bytes > 0) {
+    AIPARA_LOG_DEBUG(
+        logger_,
+        "AI转换通道立即清理残留字节数: " +
+            std::to_string(drained_bytes));
+  }
+  ai_state.last_error.clear();
+
   rapidjson::Document doc(rapidjson::kObjectType);
   auto& allocator = doc.GetAllocator();
   doc.AddMember("messege_type", "convert", allocator);
@@ -1616,6 +2072,10 @@ bool TcpZmq::SendPasteCommand(rime::Engine* engine) {
     return false;
   }
 
+  if (auto* schema = engine->schema()) {
+    RefreshCurveConfig(schema->config());
+  }
+
   rapidjson::Document doc(rapidjson::kObjectType);
   auto& allocator = doc.GetAllocator();
   doc.AddMember("messege_type", "command", allocator);
@@ -1691,6 +2151,9 @@ bool TcpZmq::ForceReconnect() {
   ai_convert_.write_failure_count = 0;
 
   DisconnectFromServer();
+
+  rime_state_.suspended_until = 0;
+  ai_convert_.suspended_until = 0;
 
   const bool rime_connected = ConnectToRimeServer();
   const bool ai_connected = ConnectToAiServer();

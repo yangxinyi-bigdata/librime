@@ -329,6 +329,9 @@ ProcessResult CloudInputProcessor::ProcessKeyEvent(const KeyEvent& key_event) {
   if (const Schema* schema = engine_->schema()) {
     config = schema->config();
   }
+  if (tcp_zmq_ && config) {
+    tcp_zmq_->RefreshCurveConfig(config);
+  }
   // 更新文本格式化模块的当前配置
   text_formatting::UpdateCurrentConfig(config);
 

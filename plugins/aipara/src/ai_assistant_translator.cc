@@ -368,6 +368,10 @@ AiAssistantTranslator::ReadLatestAiStream() {
     return result;
   }
 
+  if (Config* config = ResolveConfig()) {
+    tcp_zmq_->RefreshCurveConfig(config);
+  }
+
   const TcpZmq::LatestAiMessage latest =
       tcp_zmq_->ReadLatestFromAiSocket(kAiSocketTimeoutSeconds);
 

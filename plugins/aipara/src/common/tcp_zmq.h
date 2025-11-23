@@ -124,6 +124,8 @@ class TcpZmq {
   bool Init();
   void Fini();
 
+  void RefreshCurveConfig(rime::Config* config);
+
   bool ConnectToRimeServer();
   bool ConnectToAiServer();
   void DisconnectFromRimeServer(int retry_delay_ms = -1);
@@ -213,6 +215,11 @@ class TcpZmq {
     std::int64_t suspended_until = 0;
     int health_check_interval_ms = 5000;
     std::int64_t last_health_check = 0;
+    std::uint64_t curve_version_applied = 0;
+    bool connect_pending = false;
+    bool handshake_logged = false;
+    int handshake_timeout_ms = 5000;
+    std::string last_endpoint;
   };
 
   struct ReceiveResult {
@@ -228,9 +235,16 @@ class TcpZmq {
   void ResetSocketState(SocketState& state, bool reset_queue = true);
   void ConfigureSocketDefaults(SocketState& state);
   ReceiveResult ReceiveSocketPayloads(void* socket, int flags);
-  int DrainSocketImmediate(SocketState& state, std::string* fatal_error);
+  int DrainSocketImmediate(SocketState& state,
+                           const char* channel_name,
+                           std::string* fatal_error);
   static std::vector<std::string> SplitPayload(const std::string& payload);
   static bool IsTemporaryError(int error_code);
+  bool ConfigureCurveForSocket(SocketState& state);
+  bool EnsureCurveKeysLoaded();
+  bool LoadCurveKeys();
+  void MarkSocketHandshakeSuccess(SocketState& state,
+                                  const char* channel_name);
   static int ToMilliseconds(std::optional<double> timeout_seconds,
                             int fallback_ms);
   std::string EnsureAiIdentity();
@@ -253,6 +267,20 @@ class TcpZmq {
   std::string host_ = "127.0.0.1";
   std::string client_id_;
   bool is_initialized_ = false;
+
+  struct CurveSettings {
+    bool configured = false;
+    bool enabled = false;
+    std::string cert_dir;
+    std::string server_public_key;
+    std::string client_public_key;
+    std::string client_secret_key;
+    bool keys_loaded = false;
+    std::string last_error;
+    std::uint64_t version = 0;
+  };
+
+  CurveSettings curve_settings_;
 
   SocketState rime_state_;
   SocketState ai_convert_;

@@ -368,6 +368,7 @@ an<Translation> CloudAiFilterV2::Apply(an<Translation> translation,
       bool send_success = false;
       if (config) {
         try {
+          tcp_zmq_->RefreshCurveConfig(config);
           const std::string shuru_schema = RequireConfigString(
               config, "schema/my_shuru_schema");
           request_attempted = true;

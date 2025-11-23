@@ -60,6 +60,11 @@ SmartCursorProcessor::SmartCursorProcessor(const Ticket& ticket)
 
   // 确保使用插件级共享的 TcpZmq 客户端。
   tcp_zmq_ = AcquireGlobalTcpZmq();
+  if (tcp_zmq_ && engine_) {
+    if (auto* schema = engine_->schema()) {
+      tcp_zmq_->RefreshCurveConfig(schema->config());
+    }
+  }
   if (engine_ && engine_->context() && tcp_zmq_) {
     ApplyGlobalOptions(engine_->context());
   }
