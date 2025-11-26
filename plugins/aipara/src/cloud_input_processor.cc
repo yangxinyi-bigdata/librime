@@ -516,6 +516,14 @@ ProcessResult CloudInputProcessor::HandleInterceptSelectKey(
   }
 
   if (ContainsNewline(commit_text)) {
+    context->Clear();
+    if (ai_config.behavior.add_reply_prefix) {
+      const std::string script_text = context->GetScriptText();
+      if (!script_text.empty()) {
+        engine_->CommitText(script_text);
+      }
+      context->Clear();
+    }
     bool success = false;
     if (tcp_zmq_) {
       std::string send_key = context->get_property("send_key");

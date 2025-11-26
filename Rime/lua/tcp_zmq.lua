@@ -15,14 +15,52 @@
 - read_latest_from_ai_socket 聚合最新一条消息
 - parse_socket_data/handle_socket_command 上层协议解析与命令处理
 --]] -- 添加 ARM64 Homebrew 的 Lua 路径和项目lua目录
-local function setup_lua_paths()
-    -- 添加 ARM64 Homebrew 路径
-    package.path = package.path .. ";/opt/homebrew/share/lua/5.4/?.lua;/opt/homebrew/share/lua/5.4/?/init.lua"
-    package.cpath = package.cpath .. ";/opt/homebrew/lib/lua/5.4/?.so;/opt/homebrew/lib/lua/5.4/?/core.so"
+-- local function setup_lua_paths()
+--     -- 添加 ARM64 Homebrew 路径
+--     package.path = package.path .. ";/opt/homebrew/share/lua/5.4/?.lua;/opt/homebrew/share/lua/5.4/?/init.lua"
+--     package.cpath = package.cpath .. ";/opt/homebrew/lib/lua/5.4/?.so;/opt/homebrew/lib/lua/5.4/?/core.so"
 
-    -- 添加项目lua目录到搜索路径（使用绝对路径）
-    package.path = package.path ..
-                       ";/Users/yangxinyi/Library/Rime/lua/?.lua;/Users/yangxinyi/Library/Rime/lua/?/init.lua"
+--     -- 添加项目lua目录到搜索路径（使用绝对路径）
+--     package.path = package.path ..
+--                        ";/Users/yangxinyi/Library/Rime/lua/?.lua;/Users/yangxinyi/Library/Rime/lua/?/init.lua"
+-- end
+
+
+local function append_paths(current, entries)
+  for _, entry in ipairs(entries) do
+    if not current:find(entry, 1, true) then
+      current = current .. ";" .. entry
+    end
+  end
+  return current
+end
+
+local function setup_lua_paths()
+  -- Homebrew 安装目录
+  package.path  = append_paths(package.path, {
+    "/opt/homebrew/share/lua/5.4/?.lua",
+    "/opt/homebrew/share/lua/5.4/?/init.lua",
+  })
+  package.cpath = append_paths(package.cpath, {
+    "/opt/homebrew/lib/lua/5.4/?.so",
+    "/opt/homebrew/lib/lua/5.4/?/core.so",
+  })
+
+  -- 安装在 /opt/lzmq 的模块（含 lzmq.so、lzmq/timer.so 等）
+  package.path  = append_paths(package.path, {
+    "/opt/lzmq/lib/lua/?.lua",
+    "/opt/lzmq/lib/lua/?/init.lua",
+  })
+  package.cpath = append_paths(package.cpath, {
+    "/opt/lzmq/lib/lua/?.so",
+    "/opt/lzmq/lib/lua/?/?.so",
+  })
+
+--   -- 项目自身 Lua 脚本
+--   package.path  = append_paths(package.path, {
+--     "/Users/yangxinyi/Library/Aipara/lua/?.lua",
+--     "/Users/yangxinyi/Library/Aipara/lua/?/init.lua",
+--   })
 end
 
 setup_lua_paths()
@@ -57,6 +95,15 @@ tcp_zmq.update_all_modules_config = nil
 -- 全局开关状态（仅内存，不落盘）。键为 option 名，值为 boolean。
 tcp_zmq.global_option_state = {}
 tcp_zmq.update_global_option_state = false
+
+-- 全局属性状态,不再保存到context当中,而是直接保存到自己的变量当中,然后以后用这个变量判断,就可以脱离session的限制了.
+tcp_zmq.global_property_state = {}
+
+-- 记录属性值，供其他会话复用
+function tcp_zmq.set_global_property(name, value)
+    tcp_zmq.global_property_state[name] = tostring(value or "")
+end
+
 
 -- 记录一个全局开关值
 function tcp_zmq.set_global_option(name, value)
@@ -225,9 +272,212 @@ local socket_system = {
         default_snd_timeout_ms = 100
     },
 
+    -- CURVE 安全配置
+    curve = {
+        required = false, -- 配置是否要求启用 CURVE
+        enabled = false, -- 证书与依赖是否就绪
+        cert_dir = nil,
+        client_public_key = nil,
+        client_secret_key = nil,
+        server_public_key = nil,
+        last_error = nil,
+        last_loaded_at = nil
+    },
+
     -- 系统状态
     is_initialized = false
 }
+
+local function trim(str)
+    if type(str) ~= "string" then
+        return str
+    end
+    return (str:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function join_paths(base, name)
+    if not base or base == "" then
+        return name
+    end
+    if not name or name == "" then
+        return base
+    end
+    if base:sub(-1) == "/" then
+        return base .. name
+    end
+    return base .. "/" .. name
+end
+
+local function read_all_text(path)
+    local file, err = io.open(path, "r")
+    if not file then
+        return nil, err
+    end
+    local content = file:read("*a")
+    file:close()
+    return content or ""
+end
+
+local function extract_curve_field(content, field_name)
+    if not content then
+        return nil
+    end
+    local escaped_field = field_name:gsub("([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1")
+    local pattern = escaped_field .. '%s*=%s*"(.-)"'
+    local value = content:match(pattern)
+    if value then
+        value = trim(value)
+    end
+    return value
+end
+
+local function reset_curve_state(curve_cfg)
+    curve_cfg.enabled = false
+    curve_cfg.cert_dir = nil
+    curve_cfg.client_public_key = nil
+    curve_cfg.client_secret_key = nil
+    curve_cfg.server_public_key = nil
+    curve_cfg.last_error = nil
+    curve_cfg.last_loaded_at = nil
+end
+
+local function load_curve_credentials(cert_dir)
+    local curve_cfg = socket_system.curve
+    if not curve_cfg then
+        return false, "curve_config_unavailable"
+    end
+
+    local cert_dir = trim(cert_dir or "")
+    if cert_dir == "" then
+        reset_curve_state(curve_cfg)
+        curve_cfg.last_error = "curve_cert_dir 未设置"
+        logger.error("CURVE 安全已启用，但未提供证书目录")
+        return false, curve_cfg.last_error
+    end
+
+    curve_cfg.cert_dir = cert_dir
+
+    local client_secret_path = join_paths(cert_dir, "client_secret.key")
+    local client_secret_content, secret_err = read_all_text(client_secret_path)
+    if not client_secret_content then
+        reset_curve_state(curve_cfg)
+        curve_cfg.last_error = "无法读取 client_secret.key: " .. tostring(secret_err)
+        logger.error("CURVE 客户端证书读取失败 (" .. client_secret_path .. "): " .. tostring(secret_err))
+        return false, curve_cfg.last_error
+    end
+
+    local client_public_key = extract_curve_field(client_secret_content, "public-key")
+    local client_secret_key = extract_curve_field(client_secret_content, "secret-key")
+    if not client_public_key or not client_secret_key or #client_public_key ~= 40 or #client_secret_key ~= 40 then
+        reset_curve_state(curve_cfg)
+        curve_cfg.last_error = "client_secret.key 中的公钥/私钥无效"
+        logger.error("CURVE 客户端证书格式无效，请确认 client_secret.key 是否包含标准 ZeroMQ 密钥")
+        return false, curve_cfg.last_error
+    end
+
+    local server_public_path = join_paths(cert_dir, "server_public.key")
+    local server_public_content, server_err = read_all_text(server_public_path)
+    if not server_public_content then
+        reset_curve_state(curve_cfg)
+        curve_cfg.last_error = "无法读取 server_public.key: " .. tostring(server_err)
+        logger.error("CURVE 服务端公钥读取失败 (" .. server_public_path .. "): " .. tostring(server_err))
+        return false, curve_cfg.last_error
+    end
+
+    local server_public_key = extract_curve_field(server_public_content, "public-key")
+    if not server_public_key or #server_public_key ~= 40 then
+        reset_curve_state(curve_cfg)
+        curve_cfg.last_error = "server_public.key 中的公钥无效"
+        logger.error("CURVE 服务端公钥格式无效，请确认 server_public.key 是否包含标准 ZeroMQ 密钥")
+        return false, curve_cfg.last_error
+    end
+
+    local has_curve_support = false
+    if zmq and zmq.has then
+        local ok, result = pcall(function()
+            return zmq.has("curve")
+        end)
+        if ok then
+            has_curve_support = result and result ~= 0
+        else
+            logger.warn("检测 CURVE 支持失败: " .. tostring(result))
+        end
+    else
+        reset_curve_state(curve_cfg)
+        curve_cfg.last_error = "lzmq 模块不可用或缺少 zmq.has 接口"
+        logger.error("CURVE 安全要求 lzmq 模块支持 zmq.has，但当前环境不可用")
+        return false, curve_cfg.last_error
+    end
+
+    if not has_curve_support then
+        reset_curve_state(curve_cfg)
+        curve_cfg.last_error = "当前 libzmq 未启用 CURVE 支持"
+        logger.error("libzmq 未启用 CURVE 支持，无法建立安全连接")
+        return false, curve_cfg.last_error
+    end
+
+    curve_cfg.enabled = true
+    curve_cfg.cert_dir = cert_dir
+    curve_cfg.client_public_key = client_public_key
+    curve_cfg.client_secret_key = client_secret_key
+    curve_cfg.server_public_key = server_public_key
+    curve_cfg.last_error = nil
+    curve_cfg.last_loaded_at = get_current_time_ms()
+
+    logger.info("ZeroMQ CURVE 安全已启用 (证书目录: " .. cert_dir .. ")")
+    return true
+end
+
+local function configure_curve_socket(sock, channel_label)
+    local curve_cfg = socket_system.curve
+    if not curve_cfg or not curve_cfg.enabled then
+        return true
+    end
+
+    if not (sock.set_curve_secretkey and sock.set_curve_publickey and sock.set_curve_serverkey) then
+        local msg = "当前 ZeroMQ 套接字未暴露 CURVE 配置接口"
+        logger.error(msg)
+        return false, msg
+    end
+
+    local ok, err = pcall(function()
+        sock:set_curve_secretkey(curve_cfg.client_secret_key)
+        sock:set_curve_publickey(curve_cfg.client_public_key)
+        sock:set_curve_serverkey(curve_cfg.server_public_key)
+    end)
+
+    if not ok then
+        local msg = string.format("配置 %s CURVE 安全失败: %s", channel_label or "socket", tostring(err))
+        logger.error(msg)
+        return false, msg
+    end
+
+    return true
+end
+
+function tcp_zmq.configure_curve_security(options)
+    local curve_cfg = socket_system.curve
+    if not curve_cfg then
+        return false, "curve_config_unavailable"
+    end
+
+    options = options or {}
+    local enabled = not not options.enabled
+    curve_cfg.required = enabled
+
+    if not enabled then
+        reset_curve_state(curve_cfg)
+        logger.info("ZeroMQ CURVE 安全已禁用")
+        return true
+    end
+
+    local cert_dir = options.cert_dir or options.directory
+    local ok, err = load_curve_credentials(cert_dir)
+    if not ok then
+        return false, err
+    end
+    return true
+end
 
 local function ensure_zmq_context()
     -- 若 lzmq 未加载，直接返回错误标记
@@ -424,6 +674,13 @@ function tcp_zmq.connect_to_rime_server()
         return false
     end
 
+    local curve_cfg = socket_system.curve
+    if curve_cfg and curve_cfg.required and not curve_cfg.enabled then
+        local err_msg = curve_cfg.last_error or "未能加载 CURVE 证书"
+        logger.error("CURVE 安全已启用，但初始化失败，无法连接 Rime 状态服务: " .. tostring(err_msg))
+        return false
+    end
+
     local current_time = get_current_time_ms()
     if rime_state.suspended_until and current_time < rime_state.suspended_until then
         return false
@@ -478,6 +735,15 @@ function tcp_zmq.connect_to_rime_server()
             sock:set_heartbeat_ttl(4000)
         end
     end)
+
+    local curve_ok, curve_err = configure_curve_socket(sock, "Rime状态通道")
+    if not curve_ok then
+        rime_state.connection_failures = rime_state.connection_failures + 1
+        rime_state.last_error = curve_err
+        close_zmq_socket(sock)
+        return false
+    end
+
     configure_socket_defaults(sock, rime_state.default_snd_timeout_ms, rime_state.default_rcv_timeout_ms)
 
     local endpoint = string.format("tcp://%s:%d", socket_system.host, rime_state.port)
@@ -528,6 +794,13 @@ function tcp_zmq.connect_to_ai_server()
         return false
     end
 
+    local curve_cfg = socket_system.curve
+    if curve_cfg and curve_cfg.required and not curve_cfg.enabled then
+        local err_msg = curve_cfg.last_error or "未能加载 CURVE 证书"
+        logger.error("CURVE 安全已启用，但初始化失败，无法连接 AI 转换服务: " .. tostring(err_msg))
+        return false
+    end
+
     local ctx, ctx_err = ensure_zmq_context()
     -- 确保 ZeroMQ 上下文可用
     if not ctx then
@@ -557,6 +830,15 @@ function tcp_zmq.connect_to_ai_server()
     pcall(function()
         sock:set_identity(identity)
     end)
+
+    local curve_ok, curve_err = configure_curve_socket(sock, "AI转换通道")
+    if not curve_ok then
+        ai_convert.connection_failures = ai_convert.connection_failures + 1
+        ai_convert.last_error = curve_err
+        close_zmq_socket(sock)
+        return false
+    end
+
     -- 配置默认超时与 LINGER
     configure_socket_defaults(sock, ai_convert.default_snd_timeout_ms, ai_convert.default_rcv_timeout_ms)
 
@@ -1163,7 +1445,10 @@ function tcp_zmq.handle_socket_command(command_messege, env)
         -- 修改属性
         logger.debug("command_messege.property_name: " .. tostring(command_messege.property_name))
         logger.debug("command_messege.property_value: " .. tostring(command_messege.property_value))
-        tcp_zmq.update_property(command_messege.property_name, command_messege.property_value)
+        -- 不再直接写入各 session 的 context 属性，统一存入全局属性表
+        tcp_zmq.set_global_property(command_messege.property_name, command_messege.property_value)
+        logger.debug("保存到 global_property_state[" .. tostring(command_messege.property_name) .. "]: " ..
+                         tostring(command_messege.property_value))
 
         return true
     elseif command == "clipboard_data" then
@@ -1473,6 +1758,9 @@ function tcp_zmq.send_convert_request(schema_name, shuru_schema, confirmed_pos_i
     local timeout = timeout_seconds or socket_system.ai_convert.timeout -- 默认使用AI服务超时时间
     local success, result_or_error = pcall(function()
         local current_time = get_current_time_ms()
+
+        -- 每次发送新请求前快速清理遗留的流式数据，避免读取到上一轮的响应
+        tcp_zmq.flush_ai_socket_buffer()
 
         -- 构建要转换的拼音字符串
         local convert_data = {

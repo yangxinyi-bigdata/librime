@@ -220,6 +220,26 @@ void TcpZmq::SetGlobalOption(const std::string& name, bool value) {
       logger_, "记录全局开关: " + name + " = " + (value ? "true" : "false"));
 }
 
+void TcpZmq::SetGlobalProperty(const std::string& name,
+                               const std::string& value) {
+  const auto it = global_property_state_.find(name);
+  if (it != global_property_state_.end() && it->second == value) {
+    return;
+  }
+  global_property_state_[name] = value;
+  AIPARA_LOG_DEBUG(logger_,
+                   "记录全局属性: " + name + " = " + value);
+}
+
+std::optional<std::string> TcpZmq::GetGlobalProperty(
+    const std::string& name) const {
+  const auto it = global_property_state_.find(name);
+  if (it == global_property_state_.end()) {
+    return std::nullopt;
+  }
+  return it->second;
+}
+
 int TcpZmq::ApplyGlobalOptionsToContext(rime::Context* context) {
   if (!context) {
     return 0;
@@ -1638,7 +1658,10 @@ bool TcpZmq::HandleSocketCommand(const rapidjson::Value& command_message,
     const auto property_value =
         GetOptionalString(command_message, "property_value");
     if (property_name && property_value) {
-      UpdateProperty(*property_name, *property_value);
+      SetGlobalProperty(*property_name, *property_value);
+      AIPARA_LOG_DEBUG(
+          logger_, "保存到 global_property_state[" + *property_name +
+                       "]: " + *property_value);
     }
     return true;
   }

@@ -26,8 +26,6 @@
 namespace rime::aipara {
 namespace {
 
-constexpr std::string_view kDefaultAuxCodeFile =
-    "20250612_phrases_shuangpin_org";
 constexpr std::string_view kLoggerName = "aux_code_filter_v3";
 constexpr std::string_view kPunctuationChars =
     ",.!?;:()[]<>/_=+*&^%$#@~|-\'\"`";
@@ -207,18 +205,21 @@ void AuxCodeFilterV3::OnSelect(Context* context) {
 }
 
 bool AuxCodeFilterV3::EnsureAuxTables(const std::string& txt_name) {
-  std::string requested = txt_name.empty()
-                              ? std::string(kDefaultAuxCodeFile)
-                              : txt_name;
-  if (requested == cached_aux_code_file_ && !aux_hanzi_code_.empty()) {
+  if (txt_name.empty()) {
+    AIPARA_LOG_ERROR(logger_, "Auxiliary code file is not configured.");
+    aux_hanzi_code_.clear();
+    aux_code_hanzi_.clear();
+    cached_aux_code_file_.clear();
+    return false;
+  }
+
+  if (txt_name == cached_aux_code_file_ && !aux_hanzi_code_.empty()) {
     return true;
   }
 
-  std::filesystem::path primary = ResolveAuxCodePath(requested);
-  std::filesystem::path fallback =
-      ResolveAuxCodePath(std::string(kDefaultAuxCodeFile));
+  std::filesystem::path target = ResolveAuxCodePath(txt_name);
 
-  if (primary.empty() && fallback.empty()) {
+  if (target.empty()) {
     AIPARA_LOG_ERROR(
         logger_, "Unable to determine auxiliary code directory path.");
     aux_hanzi_code_.clear();
@@ -227,19 +228,13 @@ bool AuxCodeFilterV3::EnsureAuxTables(const std::string& txt_name) {
     return false;
   }
 
-  std::filesystem::path target = primary;
-  if (target.empty() || !std::filesystem::exists(target)) {
-    if (!fallback.empty() && std::filesystem::exists(fallback)) {
-      target = fallback;
-      requested = std::string(kDefaultAuxCodeFile);
-    } else {
-      AIPARA_LOG_ERROR(
-          logger_, "Auxiliary code file not found: " + primary.string());
-      aux_hanzi_code_.clear();
-      aux_code_hanzi_.clear();
-      cached_aux_code_file_.clear();
-      return false;
-    }
+  if (!std::filesystem::exists(target)) {
+    AIPARA_LOG_ERROR(
+        logger_, "Auxiliary code file not found: " + target.string());
+    aux_hanzi_code_.clear();
+    aux_code_hanzi_.clear();
+    cached_aux_code_file_.clear();
+    return false;
   }
 
   std::ifstream file(target);
@@ -278,7 +273,7 @@ bool AuxCodeFilterV3::EnsureAuxTables(const std::string& txt_name) {
 
   aux_hanzi_code_ = std::move(aux_hanzi_code);
   aux_code_hanzi_ = std::move(aux_code_hanzi);
-  cached_aux_code_file_ = requested;
+  cached_aux_code_file_ = txt_name;
   return true;
 }
 

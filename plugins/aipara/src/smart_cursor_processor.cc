@@ -137,6 +137,8 @@ ProcessResult SmartCursorProcessor::ProcessKeyEvent(const KeyEvent& key_event) {
 
   Config* config = CurrentConfig();
   const std::string key_repr = key_event.repr();
+  // 每次触发都和服务器同步一次，确保最新状态。
+  SyncWithServer(context, true);
 
   // AIPARA_LOG_DEBUG(logger_, "key_repr: " + key_repr);
   // const std::string current_app = context->get_property("client_app");
@@ -337,7 +339,7 @@ void SmartCursorProcessor::OnExtendedUpdate(Context* context) {
     return;
   }
 
-  SyncWithServer(context, true);
+  // SyncWithServer(context, true);
 
   const bool current_is_composing = context->IsComposing();
   const bool previous_state =
@@ -361,8 +363,14 @@ void SmartCursorProcessor::OnExtendedUpdate(Context* context) {
       return;
     }
 
-    const std::string keepon_chat_trigger =
-        context->get_property("keepon_chat_trigger");
+    std::string keepon_chat_trigger;
+    if (tcp_zmq_) {
+      if (auto trigger =
+              tcp_zmq_->GetGlobalProperty("keepon_chat_trigger")) {
+        keepon_chat_trigger = *trigger;
+      }
+    }
+
     if (!keepon_chat_trigger.empty()) {
       auto chat_triggers = LoadChatTriggers(CurrentConfig());
       auto it = chat_triggers.find(keepon_chat_trigger);

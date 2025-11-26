@@ -108,6 +108,10 @@ class TcpZmq {
   static TcpZmq& Instance();
 
   void SetGlobalOption(const std::string& name, bool value);
+  void SetGlobalProperty(const std::string& name,
+                         const std::string& value);
+  std::optional<std::string> GetGlobalProperty(
+      const std::string& name) const;
   int ApplyGlobalOptionsToContext(rime::Context* context);
 
   bool should_apply_global_options() const {
@@ -289,6 +293,7 @@ class TcpZmq {
   PropertyUpdateCallback property_callback_;
 
   std::unordered_map<std::string, bool> global_option_state_;
+  std::unordered_map<std::string, std::string> global_property_state_;
   bool update_global_option_state_ = false;
 };
 
