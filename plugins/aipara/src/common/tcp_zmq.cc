@@ -2058,6 +2058,66 @@ TcpZmq::ConvertReadResult TcpZmq::ReadConvertResult(
           parsed_data["is_error"].IsBool()) {
         result.is_error = parsed_data["is_error"].GetBool();
       }
+      if (parsed_data.HasMember("error") &&
+          parsed_data["error"].IsString()) {
+        std::string error_code(parsed_data["error"].GetString(),
+                               parsed_data["error"].GetStringLength());
+        if (!error_code.empty()) {
+          if (error_code == "network_unavailable") {
+            result.network_unavailable = true;
+          }
+          if (!result.error_msg) {
+            result.error_msg = error_code;
+          }
+        }
+      }
+      if (parsed_data.HasMember("network_error") &&
+          parsed_data["network_error"].IsBool() &&
+          parsed_data["network_error"].GetBool()) {
+        result.network_unavailable = true;
+        if (!result.error_msg) {
+          result.error_msg = std::string("network_unavailable");
+        }
+      }
+      if (parsed_data.HasMember("cloud_error") &&
+          parsed_data["cloud_error"].IsString()) {
+        std::string cloud_error_code(
+            parsed_data["cloud_error"].GetString(),
+            parsed_data["cloud_error"].GetStringLength());
+        if (!cloud_error_code.empty()) {
+          if (cloud_error_code == "cloud_response_invalid") {
+            result.cloud_response_invalid = true;
+          }
+          if (cloud_error_code == "network_unavailable") {
+            result.network_unavailable = true;
+          }
+          if (!result.error_msg) {
+            result.error_msg = cloud_error_code;
+          }
+        }
+      }
+      if (parsed_data.HasMember("ai_errors") &&
+          parsed_data["ai_errors"].IsArray()) {
+        for (const auto& item : parsed_data["ai_errors"].GetArray()) {
+          if (item.IsString()) {
+            std::string error_code(item.GetString(),
+                                   item.GetStringLength());
+            if (error_code == "network_unavailable") {
+              result.network_unavailable = true;
+              if (!result.error_msg) {
+                result.error_msg = error_code;
+              }
+            }
+          }
+        }
+      }
+      if (result.network_unavailable) {
+        result.is_error = true;
+      }
+      if (result.cloud_response_invalid && !result.is_error) {
+        // 记录云端响应异常，但不阻断后续流式结果（例如 AI 仍可返回）。
+        result.is_error = true;
+      }
       result.data = std::move(stream_result.data);
     } else {
       AIPARA_LOG_DEBUG(

@@ -28,6 +28,8 @@ constexpr std::string_view kLoggerName = "punct_eng_chinese_filter";
 constexpr std::string_view kCloudPromptError = u8"    ▶[服务端未连接] ";
 constexpr std::string_view kCloudPromptStarting = u8"    ▶[云端获取中] ";
 constexpr std::string_view kCloudPromptStop = u8"    ▶[云端转换完成] ";
+constexpr std::string_view kCloudPromptNetworkError =
+    u8"    ▶[网络未连接] ";
 constexpr std::string_view kRawEnglishPrompt = u8"    ▶ [英文模式]  ";
 constexpr std::string_view kSearchPrompt = u8"    ▶ [搜索模式]  ";
 
@@ -183,6 +185,12 @@ an<Translation> PunctEngChineseFilter::Apply(an<Translation> translation,
     } else if (rawenglish_prompt == "1") {
       // 英文模式提示
       const std::string prompt(kRawEnglishPrompt);
+      if (segment->prompt != prompt) {
+        segment->prompt = prompt;
+      }
+    } else if (get_cloud_stream == "network_error") {
+      // 云端网络错误提示
+      const std::string prompt(kCloudPromptNetworkError);
       if (segment->prompt != prompt) {
         segment->prompt = prompt;
       }

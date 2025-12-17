@@ -25,15 +25,23 @@ local function safe_require(module_name)
     end
 end
 
+local smart_cursor_processor = safe_require("smart_cursor_processor")
+local ai_assistant_segmentor = safe_require("ai_assistant_segmentor")
+local rawenglish_segment = safe_require("rawenglish_segment")
+local rawenglish_translator = safe_require("rawenglish_translator")
+local ai_assistant_translator = safe_require("ai_assistant_translator")
+local aux_code_filter_v3 = safe_require("aux_code_filter_v3")
+local cloud_ai_filter_v2 = safe_require("cloud_ai_filter_v2")
+local punct_eng_chinese_filter = safe_require("punct_eng_chinese_filter")
 local text_splitter = safe_require("text_splitter")
 
 -- 引入TCP同步模块
-local tcp_socket
+local tcp_zmq
 local tcp_ok, tcp_err = pcall(function()
-    tcp_socket = require("tcp_socket_sync")
+    tcp_zmq = require("tcp_zmq")
 end)
 if not tcp_ok then
-    logger.error("加载 tcp_socket_sync 失败: " .. tostring(tcp_err))
+    logger.error("加载 tcp_zmq 失败: " .. tostring(tcp_err))
 end
 
 -- 返回值常量定义
@@ -192,6 +200,44 @@ function cloud_input_processor.update_current_config(config)
     logger.debug("AI助手配置更新完成")
 end
 
+-- 统一的配置更新函数
+function cloud_input_processor.update_all_modules_config(config)
+    logger.debug("开始更新所有模块配置")
+
+    -- 更新所有模块的配置，添加nil检查防止模块加载失败
+    cloud_input_processor.update_current_config(config)
+
+    if rawenglish_translator and rawenglish_translator.update_current_config then
+        rawenglish_translator.update_current_config(config)
+    end
+
+    if smart_cursor_processor and smart_cursor_processor.update_current_config then
+        smart_cursor_processor.update_current_config(config)
+    end
+    if ai_assistant_segmentor and ai_assistant_segmentor.update_current_config then
+        ai_assistant_segmentor.update_current_config(config)
+    end
+    if rawenglish_segment and rawenglish_segment.update_current_config then
+        rawenglish_segment.update_current_config(config)
+    end
+    if ai_assistant_translator and ai_assistant_translator.update_current_config then
+        ai_assistant_translator.update_current_config(config)
+    end
+    if aux_code_filter_v3 and aux_code_filter_v3.update_current_config then
+        aux_code_filter_v3.update_current_config(config)
+    end
+    if cloud_ai_filter_v2 and cloud_ai_filter_v2.update_current_config then
+        cloud_ai_filter_v2.update_current_config(config)
+    end
+    if punct_eng_chinese_filter and punct_eng_chinese_filter.update_current_config then
+        punct_eng_chinese_filter.update_current_config(config)
+    end
+    if text_splitter and text_splitter.update_current_config then
+        text_splitter.update_current_config(config)
+    end
+
+    logger.debug("所有模块配置更新完成")
+end
 
 local property_update_table = {}
 function cloud_input_processor.update_context_property(property_name, property_value)
@@ -527,6 +573,193 @@ local function build_commit_text(script_text, candidate_text, delimiter, chat_tr
     return final_text
 end
 
+-- 已经放弃使用的函数
+local function handle_ai_chat_selection(key_repr, chat_trigger, env, last_segment)
+    local engine = env.engine
+    local context = engine.context
+    -- 检查当前按键是否为选词键或空格键
+    local is_select_key = false
+    local select_key_index = 0
+
+    if key_repr == "space" then
+        -- 空格键按照选词键1处理
+        is_select_key = true
+        select_key_index = 1
+        logger.debug("检测到空格键，按选词键1处理 (索引: " .. select_key_index .. ")")
+    else
+        -- 直接查找字符在选词键字符串中的位置
+        select_key_index = string.find(cloud_input_processor.ai_assistant_config.alternative_select_keys, key_repr, 1,
+            true)
+        if select_key_index then
+            is_select_key = true
+            logger.debug("检测到选词键: " .. key_repr .. " (索引: " .. select_key_index .. ")")
+        end
+    end
+
+    if is_select_key then
+
+        local menu = last_segment.menu
+        if last_segment and menu then
+            -- 检查menu是否为空以及选词索引是否在有效范围内
+            if not menu:empty() and select_key_index <= menu:candidate_count() then
+                -- 获取即将上屏的候选词
+                -- Calculate candidate index across pages
+                local candidate_count = menu:candidate_count()
+                local page_size = cloud_input_processor.ai_assistant_config.page_size
+                local candidate_index = select_key_index - 1
+
+                local page_index = math.floor((candidate_count - 1) / page_size)
+                local candidates_before_current_page = page_index * page_size
+                local current_page_count = candidate_count - candidates_before_current_page
+                if current_page_count <= 0 then
+                    current_page_count = page_size
+                end
+
+                if select_key_index > current_page_count then
+                    logger.debug("选词索引超出当前页可用候选数: " .. select_key_index .. " > " ..
+                                     current_page_count)
+                    return kNoop
+                end
+
+                candidate_index = candidates_before_current_page + (select_key_index - 1)
+
+                if page_size > 0 and candidate_count > 0 then
+
+                else
+                    logger.debug(
+                        "无法计算翻页信息, 使用默认候选索引: page_size=" .. tostring(page_size) ..
+                            ", candidate_count=" .. tostring(candidate_count))
+                end
+
+                if candidate_index >= candidate_count then
+                    logger.debug("候选索引超出范围: " .. candidate_index .. " >= " .. candidate_count)
+                    return kNoop
+                end
+
+                local candidate = last_segment:get_candidate_at(candidate_index)
+                if candidate then
+
+                    -- 检查选词后是否会完成完整输入（上屏）
+                    -- 通过检查context状态和segment状态来判断
+
+                    -- 判断是否为最后一个未确认的segment，且选择后会导致上屏
+                    local is_last_candidate = (candidate._end == #context.input)
+                    if is_last_candidate then
+                        logger.debug("选词将完成上屏操作，拦截按键并发送AI消息")
+                        local candidate_text = candidate.text
+                        logger.info("候选词文本: " .. candidate_text)
+
+                        local preedit = context:get_preedit()
+                        local preedit_text = preedit.text
+                        logger.info("preedit_text: " .. preedit_text)
+
+                        local script_text = context:get_script_text()
+                        logger.info("script_text: " .. script_text)
+
+                        -- 对上屏文本前边去除掉, 首先要知道最前边的那个是什么, 在chat_names中
+                        logger.debug("chat_trigger: " .. chat_trigger)
+                        local chat_trigger_name = cloud_input_processor.ai_assistant_config.chat_triggers[chat_trigger]
+                        logger.debug("chat_trigger_name: " .. chat_trigger_name)
+
+                        logger.debug("chat_trigger: " .. chat_trigger)
+                        local chat_name = cloud_input_processor.ai_assistant_config.chat_names[chat_trigger]
+                        logger.debug("chat_name: " .. chat_name)
+
+                        -- 使用新的函数构建最终的上屏文本，传入chat_trigger_name参数
+                        local going_commit_text = build_commit_text(script_text, candidate_text,
+                            cloud_input_processor.delimiter, chat_trigger_name)
+                        logger.debug("going_commit_text: " .. going_commit_text)
+
+                        -- 判断going_commit_text是否以chat_names开头，如果是则删除前缀
+                        local final_commit_text = going_commit_text
+                        if chat_name and going_commit_text:sub(1, #chat_name) == chat_name then
+                            final_commit_text = going_commit_text:sub(#chat_name + 1)
+                            logger.debug("删除chat_trigger_name前缀 final_commit_text: " .. chat_trigger_name ..
+                                             " -> " .. final_commit_text)
+                        else
+                            logger.debug("未找到前缀，直接上屏final_commit_text: " .. final_commit_text)
+                        end
+
+                        -- 发送聊天消息到AI服务，使用keepon_chat_trigger作为对话类型
+
+                        local ok, result = pcall(function()
+
+                            -- 读取最新消息（丢弃积压的旧消息，保留最新的有用消息）
+                            local flushed_bytes = tcp_zmq.flush_ai_socket_buffer()
+                            if flushed_bytes and flushed_bytes > 0 then
+                                logger.debug("清理了积压的AI消息: " .. flushed_bytes .. " 字节")
+                            else
+                                logger.debug("无积压的AI消息需要处理")
+                            end
+
+                            tcp_zmq.send_chat_message(final_commit_text, chat_trigger) -- 正常输入换行
+
+                            -- 清理上次的候选词
+                            local current_content = context:get_property("ai_replay_stream")
+                            if current_content ~= "" and current_content ~= "等待回复..." then
+                                context:set_property("ai_replay_stream", "等待回复...")
+                            end
+
+                            -- 如果当前不是start状态则设置为start状态
+                            local get_ai_stream = context:get_property("get_ai_stream")
+                            if get_ai_stream ~= "start" then
+                                logger.debug("设置get_ai_stream属性开关start")
+                                context:set_property("get_ai_stream", "start")
+                            end
+
+                            if cloud_input_processor.ai_assistant_config.behavior.commit_question then
+
+                                -- 再判断strip_chat_prefix为true或者false,如果为true,则清空并且重新上屏字符串
+                                if cloud_input_processor.ai_assistant_config.behavior.strip_chat_prefix then
+
+                                    logger.debug("context:clear()")
+                                    context:clear()
+
+                                    engine:commit_text(final_commit_text)
+                                    return kAccepted
+                                else
+                                    -- 正常上屏操作, 不去除前缀的话,就会正常的向后推动,变成一个普通的上屏操作
+                                    logger.debug("未设置strip_chat_prefix, 不需要删除前缀，直接上屏: " ..
+                                                     going_commit_text)
+                                    logger.debug("context:clear()")
+                                    context:clear()
+
+                                    engine:commit_text(going_commit_text)
+                                    return kAccepted
+                                end
+
+                            else
+                                -- 发送聊天消息，包含对话类型信息
+                                tcp_zmq.send_chat_message(going_commit_text, chat_trigger, false)
+                                -- 拦截按键, 清空当前context中的内容. 应该根据配置清空控制是否清空,或者正常上屏. 如果上屏则应该发送回车.
+                                logger.debug("context:clear()")
+                                context:clear()
+                                return kAccepted
+                            end
+                        end)
+
+                        if ok then
+                            -- 执行成功，返回pcall内部函数的返回值
+                            return result
+                        else
+                            -- 执行失败，记录错误但不拦截按键
+                            logger.error("AI对话请求处理出错: " .. tostring(result))
+                            return kNoop
+                        end
+                    end
+
+                else
+                    logger.warn("无法获取候选词对象")
+                end
+            else
+                logger.debug("菜单为空或选词索引超出范围: " .. select_key_index .. " > " ..
+                                 (menu:candidate_count() or 0))
+            end
+        else
+            logger.debug("没有有效的segment或menu")
+        end
+    end
+end
 
 -- 获取所有segment选择的候选词, 当前使用的函数
 local function all_segmentation_selected_candidate(key_repr, chat_trigger, env, segmentation)
@@ -601,7 +834,7 @@ local function all_segmentation_selected_candidate(key_repr, chat_trigger, env, 
                         -- 在这里添加一个分支: 判断候选词的类型是不是我自己设置的: "clear_chat_history", 如果是: 则直接取消上屏, 并发送socket消息.
                         if candidate.type == "clear_chat_history" then
                             -- 发送聊天消息，包含对话类型信息, command_value应该是assitant_id, assitant_id也就是chat_trigger
-                            tcp_socket.sync_with_server(env, false, nil, "clear_chat_history", chat_trigger)
+                            tcp_zmq.sync_with_server(env, false, nil, "clear_chat_history", chat_trigger)
 
                             -- 拦截按键, 清空当前context中的内容. 应该根据配置清空控制是否清空,或者正常上屏. 如果上屏则应该发送回车.
                             logger.debug("clear_chat_history: 清空候选词不上屏, context:clear()")
@@ -654,7 +887,7 @@ local function all_segmentation_selected_candidate(key_repr, chat_trigger, env, 
                         local ok, result = pcall(function()
 
                             -- 读取最新消息（丢弃积压的旧消息，保留最新的有用消息）
-                            local flushed_bytes = tcp_socket.flush_ai_socket_buffer()
+                            local flushed_bytes = tcp_zmq.flush_ai_socket_buffer()
                             if flushed_bytes and flushed_bytes > 0 then
                                 logger.debug("清理了积压的AI消息: " .. flushed_bytes .. " 字节")
                             else
@@ -683,7 +916,7 @@ local function all_segmentation_selected_candidate(key_repr, chat_trigger, env, 
                                     response_key = cloud_input_processor.ai_assistant_config.behavior
                                                        .after_question_send_key
                                 end
-                                tcp_socket.send_chat_message(all_selected_candidate_without_first, chat_trigger,
+                                tcp_zmq.send_chat_message(all_selected_candidate_without_first, chat_trigger,
                                     response_key) -- 正常输入换行
                                 -- 再判断strip_chat_prefix为true或者false,如果为true,则清空并且重新上屏字符串
                                 if cloud_input_processor.ai_assistant_config.behavior.strip_chat_prefix then
@@ -706,7 +939,7 @@ local function all_segmentation_selected_candidate(key_repr, chat_trigger, env, 
 
                             else
                                 -- 发送聊天消息，包含对话类型信息
-                                tcp_socket.send_chat_message(all_selected_candidate_without_first, chat_trigger, false)
+                                tcp_zmq.send_chat_message(all_selected_candidate_without_first, chat_trigger, false)
                                 -- 拦截按键, 清空当前context中的内容. 应该根据配置清空控制是否清空,或者正常上屏. 如果上屏则应该发送回车.
                                 logger.debug("context:clear()")
                                 context:clear()
@@ -781,6 +1014,35 @@ function cloud_input_processor.init(env)
     local config = env.engine.schema.config
     local current_schema_id = env.engine.schema.schema_id
 
+    -- 检查是否需要更新配置（第一次初始化或 schema 发生变化）
+    local need_update = false
+    if cloud_input_processor.last_schema_id == nil then
+        logger.debug("首次初始化，需要更新所有模块配置")
+        need_update = true
+    elseif cloud_input_processor.last_schema_id ~= current_schema_id then
+        logger.debug("Schema 发生变化: " .. tostring(cloud_input_processor.last_schema_id) .. " -> " ..
+                         current_schema_id .. "，需要更新所有模块配置")
+        need_update = true
+    else
+        logger.debug("Schema 未变化: " .. current_schema_id .. "，跳过配置更新")
+    end
+
+    if need_update then
+        -- 在初始化时设置配置更新处理器
+        if tcp_zmq and tcp_zmq.set_config_update_handler then
+            -- 将update_all_modules_config函数绑定到tcp_zmq
+            tcp_zmq.set_config_update_handler(cloud_input_processor.update_all_modules_config,
+                cloud_input_processor.update_context_property)
+            logger.debug("已将配置更新处理器绑定到tcp_zmq")
+        end
+
+        -- 使用统一的配置更新函数更新所有模块配置
+        cloud_input_processor.update_all_modules_config(config)
+        -- 更新记录的 schema ID
+        cloud_input_processor.last_schema_id = current_schema_id
+        logger.debug("cloud_input_processor及所有模块配置加载完成")
+    end
+
     --  fixed 设置一个变量
     -- context:set_property只能设置字符串类型
     env.engine.context:set_property("cloud_convert_flag", "0")
@@ -802,10 +1064,31 @@ function cloud_input_processor.func(key, env)
     local key_repr = key:repr()
     logger.debug("测试虚拟按键: " .. key_repr)
 
+    -- local set_shuru_schema = config:get_map("set_shuru_schema")
+    -- local keys = set_shuru_schema:keys()
+    -- for _, k in ipairs(keys) do
+    --     logger.debug("k: " .. k)
+    -- end
+    -- local set_shuru_schema_append = config:get_list("set_shuru_schema/__append")
+    -- logger.debug("set_shuru_schema_append size: " .. set_shuru_schema_append.size)
+    -- logger.debug("set_shuru_schema_append type: " .. tostring(set_shuru_schema_append.type) )
 
-    -- 检查Alt+F11按键的处理
+    -- -- 这里读取进来的会是什么呢? 
+    -- cloud_input_processor.app_options = config:get_map("app_options")
+    -- if cloud_input_processor.app_options then
+    --     for _, app_key in ipairs(cloud_input_processor.app_options:keys()) do
+    --         local item = cloud_input_processor.app_options:get(app_key)
+    --         if item and item.get_map then
+    --             local app_map = item:get_map()
+    --             for _, k in ipairs(app_map:keys()) do
+    --                 logger.debug("app_key: " .. app_key .. " k: " .. k .. " value: " .. config:get_string("app_options/" .. app_key .. "/" .. k) )
+    --             end
+    --         end
+    --     end
+    -- end
+
     if key_repr == "Alt+F14" then
-        -- logger.debug("执行到Alt+F11分支")
+        -- logger.debug("执行到Alt+F14分支")
         if context:get_property("get_ai_stream") == "start" then
             logger.debug("get_ai_stream==start, 触发重新刷新候选词: ")
             if context.input == "" then
@@ -814,6 +1097,13 @@ function cloud_input_processor.func(key, env)
                 logger.debug("设置AI回复输入: " .. current_ai_context)
             end
             context:refresh_non_confirmed_composition()
+
+            if context:get_property("get_ai_stream") == "stop" and
+                cloud_input_processor.ai_assistant_config.behavior.auto_commit_reply then
+                logger.debug("get_ai_stream==stop, 自动上屏: ")
+                context:set_property("get_ai_stream", "idle")
+                engine:process_key(KeyEvent("space"))
+            end
             return kNoop
         elseif context:get_property("get_ai_stream") == "stop" then
             logger.debug("set_property get_ai_stream=idle")
@@ -914,7 +1204,7 @@ function cloud_input_processor.func(key, env)
                 context:clear()
                 logger.debug("context:clear()结束")
                 -- 使用TCP通信发送粘贴命令到Python服务端（跨平台通用）
-                if tcp_socket then
+                if tcp_zmq then
                     logger.debug("🍴 通过TCP发送粘贴命令到Python服务端 (intercept模式)")
                     -- 如果获取input中的文本呢? 
                     if cloud_input_processor.ai_assistant_config.behavior.add_reply_prefix then
@@ -927,11 +1217,11 @@ function cloud_input_processor.func(key, env)
                     local paste_success
                     logger.debug("send_key: " .. context:get_property("send_key"))
                     if context:get_property("send_key") ~= "" then
-                        paste_success = tcp_socket.sync_with_server(env, true, true, "button",
+                        paste_success = tcp_zmq.sync_with_server(env, true, true, "button",
                             "paste_then_" .. context:get_property("send_key"))
                         context:set_property("send_key", "")
                     else
-                        paste_success = tcp_socket.sync_with_server(env, false, false, "button", "paste")
+                        paste_success = tcp_zmq.sync_with_server(env, false, false, "button", "paste")
                     end
 
                     if paste_success then
@@ -963,10 +1253,10 @@ function cloud_input_processor.func(key, env)
 
                 logger.debug("send_key: " .. context:get_property("send_key"))
                 if context:get_property("send_key") ~= "" then
-                    tcp_socket.sync_with_server(env, true, true, "button", context:get_property("send_key"))
+                    tcp_zmq.sync_with_server(env, true, true, "button", context:get_property("send_key"))
                     context:set_property("send_key", "")
                 else
-                    tcp_socket.sync_with_server(env, true, true)
+                    tcp_zmq.sync_with_server(env, true, true)
                 end
 
                 -- return kNoop
@@ -1015,6 +1305,36 @@ function cloud_input_processor.func(key, env)
         -- end
 
     end
+
+    -- -- 开始判断连续ai对话分支内容
+    -- -- context:set_property("keepon_chat_trigger", "translate_ai_chat")
+    -- local keepon_chat_trigger = context:get_property('keepon_chat_trigger')
+    -- logger.debug("keepon_chat_trigger: " .. keepon_chat_trigger)
+    -- -- 属性存在值代表要进入自动ai对话模式
+    -- if keepon_chat_trigger ~= "" then
+    --     logger.debug("keepon_chat_trigger: " .. keepon_chat_trigger)
+
+    --     -- 应该有豁免,对于两种情况是豁免发送的,1. AI:对话消息,2:AI回复消息
+    --     -- segment.tags 是一个Set，遍历输出其中的内容
+    --     -- local tags_str = ""
+    --     -- if first_segment.tags and type(first_segment.tags) == "table" then
+    --     --     for tag, _ in pairs(first_segment.tags) do
+    --     --         tags_str = tags_str .. tostring(tag) .. " "
+    --     --     end
+    --     -- end
+    --     -- logger.debug("first_segment.tags: " .. tags_str)
+    --     if first_segment:has_tag("ai_talk") or first_segment:has_tag("ai_reply") then
+    --         logger.debug("first_segment.tags: ai_talk or ai_reply")
+    --         return kNoop
+    --     end
+
+    --     -- -- 处理AI会话是否要进行传输等操作
+    --     -- local result = handle_ai_chat_selection(key_repr, keepon_chat_trigger, env, last_segment)
+    --     -- if result then
+    --     --     return result
+    --     -- end
+
+    -- end
 
     -- 使用 pcall 捕获所有可能的错误
     local success, result = pcall(function()

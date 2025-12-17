@@ -274,6 +274,7 @@ void SmartCursorProcessor::OnCommit(Context* context) {
   if (!context) {
     return;
   }
+  AIPARA_LOG_DEBUG(logger_, "OnCommit. input_string: " + context->input());
 
   context->set_property("input_string", "");
   if (!tcp_zmq_) {
@@ -287,7 +288,8 @@ void SmartCursorProcessor::OnCommit(Context* context) {
     context->set_property("send_key", "");
   }
 
-  SyncWithServer(context, true);
+  AIPARA_LOG_DEBUG(logger_, "将commit提交内容传输到服务端");
+  SyncWithServer(context, true, true);
 }
 
 // 非 composing 阶段的更新：把一次性标志位复位，防止后续逻辑误判。

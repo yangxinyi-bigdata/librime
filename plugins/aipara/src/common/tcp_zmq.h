@@ -92,6 +92,8 @@ class TcpZmq {
     bool is_partial = false;
     bool is_timeout = false;
     bool is_error = false;
+    bool network_unavailable = false;
+    bool cloud_response_invalid = false;
     std::optional<std::string> error_msg;
   };
 

@@ -453,6 +453,19 @@ bool CloudInputProcessor::HandleAltF14(const std::string& key_repr,
       }
     }
     context->RefreshNonConfirmedComposition();
+    if (context->get_property("get_ai_stream") == "stop") {
+      bool auto_commit_reply = false;
+      if (config) {
+        config->GetBool("ai_assistant/behavior/auto_commit_reply",
+                        &auto_commit_reply);
+      }
+      if (auto_commit_reply) {
+        AIPARA_LOG_DEBUG(logger_, "get_ai_stream==stop, auto commit reply");
+        context->set_property("get_ai_stream", "idle");
+        KeyEvent space("space");
+        engine_->ProcessKey(space);
+      }
+    }
     return true;
   }
   if (state == "stop") {

@@ -406,14 +406,31 @@ an<Translation> CloudAiFilterV2::Apply(an<Translation> translation,
     if (tcp_zmq_) {
       context->set_property("cloud_convert", "0");
       auto stream_result = tcp_zmq_->ReadConvertResult(0.01);
+      std::optional<ParsedResult> parsed_result;
+      if (stream_result.data) {
+        parsed_result = ParseConvertResult(*stream_result.data);
+      }
+      const bool has_candidates =
+          parsed_result &&
+          (!parsed_result->cloud_candidates.empty() ||
+           !parsed_result->ai_candidates.empty());
+      const bool network_unavailable = stream_result.network_unavailable;
+      if (network_unavailable && !has_candidates) {
+        context->set_property("get_cloud_stream", "network_error");
+        ClearCache();
+        return MakeTranslationFromOriginals(originals);
+      }
+      if (stream_result.cloud_response_invalid) {
+        AIPARA_LOG_INFO(logger_,
+                        "Cloud response invalid, waiting for "
+                        "subsequent AI results.");
+      }
       if (stream_result.status == TcpZmq::LatestStatus::kSuccess &&
-          stream_result.data) {
-        const ParsedResult parsed =
-            ParseConvertResult(*stream_result.data);
-        SaveCache(segment_input, parsed);
+          parsed_result) {
+        SaveCache(segment_input, *parsed_result);
         try {
           cloud_candidates =
-              build_candidates_safe(parsed, false);
+              build_candidates_safe(*parsed_result, false);
         } catch (const std::exception& e) {
           AIPARA_LOG_ERROR(
               logger_,
@@ -430,7 +447,9 @@ an<Translation> CloudAiFilterV2::Apply(an<Translation> translation,
         context->set_property("get_cloud_stream", "starting");
       } else if (stream_result.status ==
                  TcpZmq::LatestStatus::kError) {
-        context->set_property("get_cloud_stream", "error");
+        context->set_property(
+            "get_cloud_stream",
+            network_unavailable ? "network_error" : "error");
         ClearCache();
       } else {
         if (auto cached = GetCache(segment_input)) {
