@@ -44,10 +44,32 @@ local global_overrides = {
     force_unique_file_log = nil  -- 全局统一文件开关：nil=不强制, true=强制统一文件, false=强制分离文件
 }
 
+-- 根据平台获取默认日志目录，优先放在当前用户目录下
+local function get_default_log_dir()
+    local is_windows = package.config:sub(1, 1) == "\\"
+
+    if is_windows then
+        local base_dir = os.getenv("APPDATA")
+        if not base_dir or base_dir == "" then
+            local userprofile = os.getenv("USERPROFILE")
+            if userprofile and userprofile ~= "" then
+                base_dir = userprofile .. "\\AppData\\Roaming"
+            else
+                base_dir = "."
+            end
+        end
+
+        return base_dir .. "\\Rime\\log\\"
+    end
+
+    local home_dir = os.getenv("HOME") or "."
+    return home_dir .. "/Library/Aipara/log/"
+end
+
 -- 默认配置
 local default_config = {
     enabled = true,
-    log_dir = "/Users/yangxinyi/Library/Rime/log/",
+    log_dir = get_default_log_dir(),
     timestamp_format = "%Y-%m-%d %H:%M:%S",
     unique_file_log = false,  -- 是否统一输出到同一个日志文件（普通参数，由各个文件自己控制）
     unique_file_log_file = "all_modules.log",  -- 统一日志文件名

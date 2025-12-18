@@ -35,7 +35,7 @@ class Logger {
   static Logger Create(const std::string& module_name,
                        const Options& options = Options{});
 
-  // 设置或获取全局默认配置。因为是 static，所以所有 Logger 实例共享同一份默认值。
+ // 设置或获取全局默认配置。因为是 static，所以所有 Logger 实例共享同一份默认值。
   static void SetDefaultOptions(const Options& options);
   static Options GetDefaultOptions();
 
@@ -69,9 +69,12 @@ class Logger {
              const char* source_file = nullptr,
              int source_line = 0) const;
 
-  bool enabled() const { return config_.enabled; }
+ bool enabled() const { return config_.enabled; }
 
  private:
+  // 获取当前平台的默认日志目录（Windows 优先使用 APPDATA，其他平台使用 HOME）。
+  static std::filesystem::path GetDefaultLogDir();
+
   // enum class 是“强类型枚举”，用于限定日志级别的取值范围。
   // 和 Python Enum 类似，不过在 C++ 中枚举值需要加作用域（比如 Level::kDebug）。
   enum class Level {
@@ -85,7 +88,7 @@ class Logger {
   // 默认值直接写在成员后面，相当于 Python dataclass 的默认字段。
   struct EffectiveConfig {
     bool enabled = true;
-    std::filesystem::path log_dir = "/Users/yangxinyi/Library/Aipara/log_cpp/";
+    std::filesystem::path log_dir = GetDefaultLogDir();
     std::string timestamp_format = "%Y-%m-%d %H:%M:%S";
     bool unique_file_log = false;
     std::string unique_file_log_file = "all_modules.log";

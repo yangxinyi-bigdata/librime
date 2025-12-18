@@ -7,6 +7,7 @@
 #include <chrono>
 #include <ctime>
 #include <cctype>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -33,6 +34,26 @@ Logger::EffectiveConfig Logger::default_config_;
 std::optional<bool> Logger::global_enabled_;
 std::optional<bool> Logger::global_unique_file_log_;
 std::string Logger::global_unique_filename_;
+
+std::filesystem::path Logger::GetDefaultLogDir() {
+#ifdef _WIN32
+  const char* appdata = std::getenv("APPDATA");
+  if (appdata && *appdata) {
+    return std::filesystem::path(appdata) / "Rime" / "log";
+  }
+  const char* userprofile = std::getenv("USERPROFILE");
+  if (userprofile && *userprofile) {
+    return std::filesystem::path(userprofile) / "AppData" / "Roaming" /
+           "Rime" / "log";
+  }
+  return std::filesystem::path("Rime") / "log";
+#else
+  const char* home = std::getenv("HOME");
+  std::filesystem::path base = (home && *home) ? std::filesystem::path(home)
+                                               : std::filesystem::path(".");
+  return base / "Library" / "Aipara" / "log";
+#endif
+}
 
 Logger Logger::Create(const std::string& module_name,
                       const Options& options) {

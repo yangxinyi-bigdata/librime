@@ -16,6 +16,28 @@ local logger = logger_module.create("smart_cursor_processor", {
 -- 初始化时清空日志文件
 logger.clear()
 
+-- 根据平台获取用户配置目录（参考 logger.lua 的实现风格）
+local function get_default_user_config_dir()
+    local is_windows = package.config:sub(1, 1) == "\\"
+
+    if is_windows then
+        local base_dir = os.getenv("APPDATA")
+        if not base_dir or base_dir == "" then
+            local userprofile = os.getenv("USERPROFILE")
+            if userprofile and userprofile ~= "" then
+                base_dir = userprofile .. "\\AppData\\Roaming"
+            else
+                base_dir = "."
+            end
+        end
+
+        return base_dir .. "\\Rime\\"
+    end
+
+    local home_dir = os.getenv("HOME") or "."
+    return home_dir .. "/Library/Aipara/"
+end
+
 local tcp_zmq = nil
 local ok, err = pcall(function()
     tcp_zmq = require("tcp_zmq")
@@ -123,8 +145,8 @@ function smart_cursor_processor.init(env)
 
         local curve_cert_dir = nil
         local ok_dir, dir_val = pcall(config.get_string, config, "curve/curve_cert_dir")
-        if ok_dir and dir_val then
-            curve_cert_dir = dir_val
+        if ok_dir and dir_val and dir_val ~= "" then
+            curve_cert_dir = get_default_user_config_dir() .. dir_val
         end
 
         local ok_curve, err_curve = tcp_zmq.configure_curve_security({

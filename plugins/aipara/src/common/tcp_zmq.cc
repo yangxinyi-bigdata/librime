@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
@@ -60,6 +61,24 @@ namespace rime::aipara {
 namespace {
 
 namespace fs = std::filesystem;
+
+fs::path GetDefaultUserConfigDir() {
+#ifdef _WIN32
+  const char* appdata = std::getenv("APPDATA");
+  if (appdata && *appdata) {
+    return fs::path(appdata) / "Rime";
+  }
+  const char* userprofile = std::getenv("USERPROFILE");
+  if (userprofile && *userprofile) {
+    return fs::path(userprofile) / "AppData" / "Roaming" / "Rime";
+  }
+  return fs::path("Rime");
+#else
+  const char* home = std::getenv("HOME");
+  fs::path base = (home && *home) ? fs::path(home) : fs::path(".");
+  return base / "Library" / "Aipara";
+#endif
+}
 
 std::string TrimString(std::string_view text) {
   const auto begin = text.find_first_not_of(" \t\r\n");
@@ -506,6 +525,13 @@ void TcpZmq::RefreshCurveConfig(rime::Config* config) {
   std::string cert_dir_raw;
   config->GetString("curve/curve_cert_dir", &cert_dir_raw);
   std::string cert_dir = TrimString(cert_dir_raw);
+  if (!cert_dir.empty()) {
+    fs::path configured(cert_dir);
+    if (!configured.is_absolute()) {
+      configured = GetDefaultUserConfigDir() / configured;
+    }
+    cert_dir = configured.lexically_normal().string();
+  }
 
   const bool new_enabled =
       has_enabled && enabled_flag && !cert_dir.empty();
