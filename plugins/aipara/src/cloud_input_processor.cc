@@ -347,8 +347,8 @@ ProcessResult CloudInputProcessor::ProcessKeyEvent(const KeyEvent& key_event) {
     return kNoop;
   }
 
-  // 处理 Alt+F14 特殊组合键（AI 助手相关功能）
-  if (HandleAltF14(key_repr, context, config)) {
+  // 处理 Control+F14 特殊组合键（AI 助手相关功能）
+  if (HandleControlF14(key_repr, context, config)) {
     return kNoop;
   }
 
@@ -360,8 +360,8 @@ ProcessResult CloudInputProcessor::ProcessKeyEvent(const KeyEvent& key_event) {
     return kAccepted;
   }
 
-  // 处理 Alt+F13 特殊组合键（云输入流相关功能）
-  if (HandleAltF13(key_repr, context)) {
+  // 处理 Control+F13 特殊组合键（云输入流相关功能）
+  if (HandleControlF13(key_repr, context)) {
     return kAccepted;
   }
 
@@ -437,10 +437,10 @@ bool CloudInputProcessor::HandleShiftReleaseInterception(
   return true;
 }
 
-bool CloudInputProcessor::HandleAltF14(const std::string& key_repr,
-                                       Context* context,
-                                       Config* config) {
-  if (key_repr != "Alt+F14" || !context) {
+bool CloudInputProcessor::HandleControlF14(const std::string& key_repr,
+                                           Context* context,
+                                           Config* config) {
+  if (key_repr != "Control+F14" || !context) {
     return false;
   }
   const std::string state = context->get_property("get_ai_stream");
@@ -484,9 +484,9 @@ bool CloudInputProcessor::HandleAltF14(const std::string& key_repr,
   return true;
 }
 
-bool CloudInputProcessor::HandleAltF13(const std::string& key_repr,
-                                       Context* context) {
-  if (key_repr != "Alt+F13" || !context) {
+bool CloudInputProcessor::HandleControlF13(const std::string& key_repr,
+                                           Context* context) {
+  if (key_repr != "Control+F13" || !context) {
     return false;
   }
   if (context->get_property("get_cloud_stream") == "starting") {

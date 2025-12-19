@@ -62,10 +62,10 @@ class CloudInputProcessor : public Processor {
   void ApplyPendingProperties(rime::Context* context);
   bool HandleShiftReleaseInterception(const std::string& key_repr,
                                       rime::Context* context);
-  bool HandleAltF14(const std::string& key_repr,
-                    rime::Context* context,
-                    Config* config);
-  bool HandleAltF13(const std::string& key_repr, rime::Context* context);
+  bool HandleControlF14(const std::string& key_repr,
+                        rime::Context* context,
+                        Config* config);
+  bool HandleControlF13(const std::string& key_repr, rime::Context* context);
   ProcessResult HandleInterceptSelectKey(const std::string& key_repr,
                                          rime::Context* context,
                                          Config* config);
