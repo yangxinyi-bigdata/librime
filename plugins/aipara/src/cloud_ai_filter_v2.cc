@@ -625,7 +625,7 @@ std::vector<an<Candidate>> CloudAiFilterV2::BuildCandidatesFromResult(
        i < result.cloud_candidates.size() && i < cloud_limit; ++i) {
     const std::string& text = result.cloud_candidates[i];
     auto candidate = New<SimpleCandidate>(
-        "baidu_cloud", segment_start, segment_end, text,
+        "web_cloud", segment_start, segment_end, text,
         from_cache ? std::string(kCacheCloudComment) : std::string(),
         preedit);
     const double quality =

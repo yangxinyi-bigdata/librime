@@ -40,7 +40,7 @@ bool StartsWith(const std::string& text, std::string_view prefix) {
 std::string FormatComment(const std::string& cand_type,
                           const std::string& original_comment,
                           bool remove_chinese_pos) {
-  if (cand_type == "baidu_cloud") {
+  if (cand_type == "web_cloud") {
     return std::string(u8"   [云输入]");
   }
   if (cand_type == "ai_cloud") {

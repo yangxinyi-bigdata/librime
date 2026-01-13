@@ -259,7 +259,7 @@ function punct_eng_chinese_filter.func(translation, env)
                 -- 根据文档，使用Candidate构造方法创建新候选项
                 -- Candidate(type, start, end, text, comment)
                 logger.info("cand_type: " .. cand_type)
-                if cand_type == "baidu_cloud" then
+                if cand_type == "web_cloud" then
                     cand_comment = "   [云输入]"
                 elseif cand_type == "ai_cloud" then
                     cand_comment = "   [AI识别]"
@@ -288,7 +288,7 @@ function punct_eng_chinese_filter.func(translation, env)
                     cand.comment = cand.comment:gsub("^chinese_pos:[%d,]+", "")
                 end
 
-                if cand_type == "baidu_cloud" then
+                if cand_type == "web_cloud" then
                     cand.comment = "   [云输入]"
                 elseif cand_type == "ai_cloud" then
                     cand.comment = "   [AI识别]"
