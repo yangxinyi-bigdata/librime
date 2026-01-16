@@ -405,10 +405,27 @@ ProcessResult CloudInputProcessor::ProcessKeyEvent(const KeyEvent& key_event) {
 void CloudInputProcessor::UpdateProperty(const std::string& property_name,
                                          const std::string& property_value) {
   pending_property_updates_[property_name] = property_value;
+  AIPARA_LOG_DEBUG(logger_,
+                   "缓存属性更新: " + property_name + " = " + property_value);
 }
 
 void CloudInputProcessor::AttachTcpZmq(TcpZmq* client) {
   tcp_zmq_ = client;
+  if (tcp_zmq_) {
+    tcp_zmq_->SetConfigUpdateHandler(
+        [this](Config* config) {
+          AIPARA_LOG_INFO(logger_, "收到配置更新通知，刷新当前配置");
+          text_formatting::UpdateCurrentConfig(config);
+        },
+        [this](const std::string& name, const std::string& value) {
+          AIPARA_LOG_INFO(logger_,
+                          "收到属性更新通知: " + name + " = " + value);
+          UpdateProperty(name, value);
+        });
+    AIPARA_LOG_INFO(logger_, "已绑定TcpZmq配置/属性更新回调");
+  } else {
+    AIPARA_LOG_WARN(logger_, "TcpZmq为空，无法绑定更新回调");
+  }
 }
 
 void CloudInputProcessor::ApplyPendingProperties(Context* context) {
@@ -417,6 +434,8 @@ void CloudInputProcessor::ApplyPendingProperties(Context* context) {
   }
   for (const auto& [name, value] : pending_property_updates_) {
     context->set_property(name, value);
+    AIPARA_LOG_DEBUG(logger_,
+                     "应用context属性更新: " + name + " = " + value);
   }
   pending_property_updates_.clear();
 }

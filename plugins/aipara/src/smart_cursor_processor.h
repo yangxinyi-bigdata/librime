@@ -74,6 +74,7 @@ class SmartCursorProcessor : public Processor {
   void UpdateAsciiModeFromVimState(const std::string& app_key,
                                    Context* context,
                                    Config* config);
+  bool ResolveAppForOptions(Context* context, std::string* app_name) const;
 
   // 杂项工具：
   std::string SanitizeAppKey(const std::string& app_name) const;

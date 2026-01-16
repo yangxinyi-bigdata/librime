@@ -621,15 +621,14 @@ std::vector<an<Candidate>> CloudAiFilterV2::BuildCandidatesFromResult(
   const std::size_t ai_limit =
       static_cast<std::size_t>(std::max(0, max_ai_candidates));
 
-  for (std::size_t i = 0;
-       i < result.cloud_candidates.size() && i < cloud_limit; ++i) {
-    const std::string& text = result.cloud_candidates[i];
+  if (!result.cloud_candidates.empty() && cloud_limit > 0) {
+    const std::string& text = result.cloud_candidates.front();
     auto candidate = New<SimpleCandidate>(
         "web_cloud", segment_start, segment_end, text,
         from_cache ? std::string(kCacheCloudComment) : std::string(),
         preedit);
     const double quality =
-        900 + (static_cast<int>(cloud_limit - i)) * 10;
+        900 + (static_cast<int>(cloud_limit)) * 10;
     candidate->set_quality(quality);
     output.push_back(candidate);
   }
@@ -648,6 +647,19 @@ std::vector<an<Candidate>> CloudAiFilterV2::BuildCandidatesFromResult(
         preedit);
     const double quality =
         950 + (static_cast<int>(ai_limit - i)) * 10;
+    candidate->set_quality(quality);
+    output.push_back(candidate);
+  }
+
+  for (std::size_t i = 1;
+       i < result.cloud_candidates.size() && i < cloud_limit; ++i) {
+    const std::string& text = result.cloud_candidates[i];
+    auto candidate = New<SimpleCandidate>(
+        "web_cloud", segment_start, segment_end, text,
+        from_cache ? std::string(kCacheCloudComment) : std::string(),
+        preedit);
+    const double quality =
+        900 + (static_cast<int>(cloud_limit - i)) * 10;
     candidate->set_quality(quality);
     output.push_back(candidate);
   }

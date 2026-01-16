@@ -136,6 +136,33 @@ std::string DotPathToRimePath(const std::string& dot_path) {
   return result;
 }
 
+std::string SanitizeAppKey(const std::string& app_name) {
+  std::string sanitized = app_name;
+  std::replace(sanitized.begin(), sanitized.end(), '.', '_');
+  return sanitized;
+}
+
+bool ParseAppOptionsPath(const std::string& rime_path,
+                         std::string* app_key,
+                         std::string* option_key) {
+  constexpr std::string_view kPrefix = "app_options/";
+  if (!app_key || !option_key) {
+    return false;
+  }
+  if (rime_path.compare(0, kPrefix.size(), kPrefix) != 0) {
+    return false;
+  }
+  const std::size_t start = kPrefix.size();
+  const std::size_t split = rime_path.find('/', start);
+  if (split == std::string::npos || split <= start ||
+      split + 1 >= rime_path.size()) {
+    return false;
+  }
+  *app_key = rime_path.substr(start, split - start);
+  *option_key = rime_path.substr(split + 1);
+  return true;
+}
+
 void ReplaceAll(std::string* text,
                 const std::string& from,
                 const std::string& to) {
@@ -1607,11 +1634,30 @@ bool TcpZmq::HandleSocketCommand(const rapidjson::Value& command_message,
       const rapidjson::Value& config_value =
           command_message["config_value"];
       if (config_value.IsBool()) {
-        config->SetBool(rime_config_path, config_value.GetBool());
+        const bool bool_value = config_value.GetBool();
+        config->SetBool(rime_config_path, bool_value);
         success = true;
         need_refresh = true;
         AIPARA_LOG_DEBUG(
             logger_, "设置布尔配置: " + rime_config_path);
+        if (context) {
+          std::string app_key;
+          std::string option_key;
+          if (ParseAppOptionsPath(rime_config_path, &app_key,
+                                  &option_key)) {
+            const std::string current_app =
+                context->get_property("client_app");
+            const std::string sanitized = SanitizeAppKey(current_app);
+            if (!current_app.empty() && app_key == sanitized &&
+                option_key != "__label__") {
+              context->set_option(option_key, bool_value);
+              AIPARA_LOG_INFO(
+                  logger_, "已即时应用 app_options: " + sanitized +
+                               " " + option_key + " = " +
+                               (bool_value ? "true" : "false"));
+            }
+          }
+        }
       } else if (config_value.IsInt()) {
         config->SetInt(rime_config_path, config_value.GetInt());
         success = true;
@@ -1665,6 +1711,15 @@ bool TcpZmq::HandleSocketCommand(const rapidjson::Value& command_message,
         UpdateConfigs(config);
         AIPARA_LOG_INFO(logger_,
                         "✅ update_all_modules_config配置更新成功");
+        if (context) {
+          context->set_property("config_update_flag", "1");
+          AIPARA_LOG_INFO(logger_,
+                          "已设置context属性: config_update_flag=1");
+        } else {
+          AIPARA_LOG_WARN(
+              logger_,
+              "context为空，无法直接设置config_update_flag");
+        }
         UpdateProperty("config_update_flag", "1");
       } else {
         AIPARA_LOG_DEBUG(logger_,

@@ -31,6 +31,7 @@ namespace {
 // “搜索移动模式”的提示常量。
 constexpr std::string_view kSearchMovePrompt = u8" ▶ [搜索模式:] ";
 constexpr std::string_view kSearchMovePromptPrefix = u8" ▶ [搜索模式:";
+constexpr std::string_view kUnknownAppPrefix = "UnknownApp";
 
 std::string MakeSearchPrompt(const std::string& value) {
   std::string prompt(kSearchMovePromptPrefix);
@@ -49,6 +50,13 @@ bool IsAsciiAlpha(const std::string& key_repr) {
 bool IsAsciiPunctChar(const std::string& key_repr) {
   return key_repr.size() == 1 &&
          std::ispunct(static_cast<unsigned char>(key_repr[0])) != 0;
+}
+
+bool IsValidAppName(const std::string& app_name) {
+  if (app_name.empty()) {
+    return false;
+  }
+  return app_name.rfind(std::string(kUnknownAppPrefix), 0) != 0;
 }
 }  // namespace
 
@@ -139,6 +147,24 @@ ProcessResult SmartCursorProcessor::ProcessKeyEvent(const KeyEvent& key_event) {
   const std::string key_repr = key_event.repr();
   // 每次触发都和服务器同步一次，确保最新状态。
   SyncWithServer(context, true);
+
+  if (context->get_property("config_update_flag") == "1") {
+    AIPARA_LOG_INFO(logger_, "检测到 config_update_flag=1, 立即应用配置");
+    if (!config) {
+      AIPARA_LOG_WARN(logger_,
+                      "config为空，暂不应用 app_options，等待后续触发");
+    } else {
+      std::string app_to_apply;
+      if (!ResolveAppForOptions(context, &app_to_apply)) {
+        AIPARA_LOG_WARN(logger_,
+                        "未获取到有效 app，暂不应用 app_options");
+      } else {
+        ApplyGlobalOptions(context);
+        ApplyAppOptions(app_to_apply, context, config);
+        context->set_property("config_update_flag", "0");
+      }
+    }
+  }
 
   // AIPARA_LOG_DEBUG(logger_, "key_repr: " + key_repr);
   // const std::string current_app = context->get_property("client_app");
@@ -393,22 +419,59 @@ void SmartCursorProcessor::OnPropertyUpdate(Context* context,
   }
 
   Config* config = CurrentConfig();
+  const std::string current_app = context->get_property("client_app");
+  const std::string config_update_flag =
+      context->get_property("config_update_flag");
 
-  if (property == "client_app") {
-    const std::string current_app = context->get_property("client_app");
-    if (previous_client_app_.empty() && !current_app.empty()) {
-      previous_client_app_ = current_app;
-    } else if (!current_app.empty() && current_app != previous_client_app_) {
-      previous_client_app_ = current_app;
-      ApplyGlobalOptions(context);
-      ApplyAppOptions(current_app, context, config);
+  AIPARA_LOG_DEBUG(logger_, "OnPropertyUpdate property=" + property +
+                                " current_app=" + current_app +
+                                " previous_app=" + previous_client_app_ +
+                                " config_update_flag=" + config_update_flag);
+
+  bool should_apply_app_options = false;
+  bool should_apply_global_options = false;
+
+  const bool current_app_valid = IsValidAppName(current_app);
+  if (previous_client_app_.empty() && current_app_valid) {
+    previous_client_app_ = current_app;
+    should_apply_app_options = true;
+    AIPARA_LOG_DEBUG(logger_,
+                     "首次获取 client_app, 记录 previous_client_app 并应用 app_options");
+  } else if (current_app_valid && current_app != previous_client_app_) {
+    AIPARA_LOG_INFO(logger_, "检测到 client_app 变化: " +
+                                 previous_client_app_ + " -> " + current_app);
+    previous_client_app_ = current_app;
+    should_apply_global_options = true;
+    should_apply_app_options = true;
+  } else if (config_update_flag == "1") {
+    AIPARA_LOG_INFO(logger_, "检测到 config_update_flag=1, 重新应用配置");
+    should_apply_global_options = true;
+    should_apply_app_options = true;
+  } else {
+    return;
+  }
+
+  if (should_apply_global_options) {
+    ApplyGlobalOptions(context);
+  }
+
+  if (should_apply_app_options) {
+    if (!config) {
+      AIPARA_LOG_WARN(logger_,
+                      "config为空，暂不应用 app_options，等待后续触发");
+      return;
     }
-  } else if (property == "config_update_flag") {
-    if (context->get_property("config_update_flag") == "1") {
-      ApplyGlobalOptions(context);
-      ApplyAppOptions(context->get_property("client_app"), context, config);
-      context->set_property("config_update_flag", "0");
+    std::string app_to_apply;
+    if (!ResolveAppForOptions(context, &app_to_apply)) {
+      AIPARA_LOG_WARN(logger_,
+                      "未获取到有效 app，暂不应用 app_options");
+      return;
     }
+    ApplyAppOptions(app_to_apply, context, config);
+  }
+
+  if (config_update_flag == "1" && config) {
+    context->set_property("config_update_flag", "0");
   }
 }
 
@@ -679,20 +742,26 @@ void SmartCursorProcessor::ApplyAppOptions(const std::string& current_app,
                                            Config* config) {
   // 验证必要参数是否有效
   if (!context || !config || current_app.empty()) {
+    AIPARA_LOG_WARN(logger_,
+                    "ApplyAppOptions skipped: invalid context/config/app");
     return;
   }
 
   // 从配置中获取应用选项映射表
   an<ConfigMap> app_options = config->GetMap("app_options");
   if (!app_options) {
+    AIPARA_LOG_WARN(logger_, "app_options 未配置或无法读取");
     return;
   }
 
   // 清理应用名称，将特殊字符替换为下划线，确保与配置键匹配
   const std::string sanitized = SanitizeAppKey(current_app);
   if (!app_options->HasKey(sanitized)) {
+    AIPARA_LOG_INFO(logger_, "未找到 app_options 条目: " + sanitized);
     return;
   }
+
+  AIPARA_LOG_INFO(logger_, "开始应用 app_options: " + sanitized);
 
   // 构建配置项的基础路径
   const std::string base_path = "app_options/" + sanitized;
@@ -706,6 +775,7 @@ void SmartCursorProcessor::ApplyAppOptions(const std::string& current_app,
 
         // 跳过特殊的标签项，不作为选项处理
         if (key == "__label__") {
+          AIPARA_LOG_DEBUG(logger_, "跳过 __label__");
           continue;
         }
 
@@ -713,8 +783,21 @@ void SmartCursorProcessor::ApplyAppOptions(const std::string& current_app,
         bool value = false;
 
         // 只有当配置值存在且与上下文中的当前值不同时才更新
-        if (config->GetBool(base_path + "/" + key, &value) &&
-            context->get_option(key) != value) {
+        if (!config->GetBool(base_path + "/" + key, &value)) {
+          AIPARA_LOG_WARN(logger_, "读取 app_options 失败: " + base_path + "/" +
+                                       key);
+          continue;
+        }
+
+        const bool current_value = context->get_option(key);
+        AIPARA_LOG_DEBUG(logger_, "app_options: key=" + key +
+                                      " value=" +
+                                      std::string(value ? "true" : "false") +
+                                      " current=" +
+                                      std::string(current_value ? "true"
+                                                                : "false"));
+
+        if (current_value != value) {
           // 更新上下文中的选项值
           context->set_option(key, value);
 
@@ -723,8 +806,31 @@ void SmartCursorProcessor::ApplyAppOptions(const std::string& current_app,
                                         (value ? "true" : "false"));
         }
       }
+    } else {
+      AIPARA_LOG_WARN(logger_, "app_options 项不是 map: " + sanitized);
     }
+  } else {
+    AIPARA_LOG_WARN(logger_, "app_options 获取失败: " + sanitized);
   }
+}
+
+bool SmartCursorProcessor::ResolveAppForOptions(Context* context,
+                                                std::string* app_name) const {
+  if (!context || !app_name) {
+    return false;
+  }
+  const std::string current_app = context->get_property("client_app");
+  if (IsValidAppName(current_app)) {
+    *app_name = current_app;
+    return true;
+  }
+  if (IsValidAppName(previous_client_app_)) {
+    *app_name = previous_client_app_;
+    AIPARA_LOG_WARN(logger_, "current_app无效, 回退使用 previous_client_app: " +
+                                 *app_name);
+    return true;
+  }
+  return false;
 }
 
 // 读取用户目录中的 vim 模式文件，切换 ascii_mode：

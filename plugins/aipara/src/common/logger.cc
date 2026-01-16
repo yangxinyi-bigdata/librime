@@ -24,7 +24,7 @@ constexpr std::string_view kDebug = "DEBUG";
 constexpr std::string_view kInfo = "INFO";
 constexpr std::string_view kWarn = "WARN";
 constexpr std::string_view kError = "ERROR";
-constexpr std::string_view kLoggerVersion = "v11";
+constexpr std::string_view kLoggerVersion = "v12";
 }  // namespace
 
 // 静态成员在类外初始化。互斥量（std::mutex）用于保护共享状态。
