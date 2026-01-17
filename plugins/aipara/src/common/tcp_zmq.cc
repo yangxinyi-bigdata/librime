@@ -1521,6 +1521,28 @@ bool TcpZmq::UpdateConfigTable(rime::Config* config,
     return false;
   }
   bool changed = false;
+  // 若此前被标记为 __DELETED__ 或类型不是 map，需先重建为 map，
+  // 否则后续字段写入可能被类型检查阻止。
+  {
+    auto item = config->GetItem(base_path);
+    if (item && !As<ConfigMap>(item)) {
+      std::string current_value;
+      if (auto val = As<ConfigValue>(item)) {
+        val->GetString(&current_value);
+      }
+      if (current_value == "__DELETED__") {
+        AIPARA_LOG_INFO(logger_, "检测到删除标记，重建为Map: " + base_path);
+      } else {
+        AIPARA_LOG_WARN(logger_, "配置节点不是Map，强制重建: " + base_path);
+      }
+      config->SetItem(base_path, New<ConfigMap>());
+      changed = true;
+    } else if (!item) {
+      config->SetItem(base_path, New<ConfigMap>());
+      changed = true;
+      AIPARA_LOG_INFO(logger_, "配置节点不存在，创建Map: " + base_path);
+    }
+  }
   for (auto it = value.MemberBegin(); it != value.MemberEnd(); ++it) {
     const std::string key(it->name.GetString(),
                           it->name.GetStringLength());
