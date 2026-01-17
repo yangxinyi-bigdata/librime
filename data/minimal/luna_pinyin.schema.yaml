@@ -56,40 +56,56 @@ engine:
     - punct_translator
     - reverse_lookup_translator
     - script_translator
-    - "table_translator@cangjie"
-    - "script_translator@pinyin"
-key_binder:
-  bindings:
-    - {accept: "Control+p", send: Up, when: composing}
-    - {accept: "Control+n", send: Down, when: composing}
-    - {accept: "Control+b", send: Left, when: composing}
-    - {accept: "Control+f", send: Right, when: composing}
-    - {accept: "Control+a", send: Home, when: composing}
-    - {accept: "Control+e", send: End, when: composing}
-    - {accept: "Control+d", send: Delete, when: composing}
-    - {accept: "Control+k", send: "Shift+Delete", when: composing}
-    - {accept: "Control+g", send: Escape, when: composing}
-    - {accept: "Alt+v", send: Page_Up, when: composing}
-    - {accept: "Control+v", send: Page_Down, when: composing}
-    - {accept: ISO_Left_Tab, send: "Shift+Left", when: composing}
-    - {accept: "Shift+Tab", send: "Shift+Left", when: composing}
-    - {accept: Tab, send: "Shift+Right", when: composing}
-    - {accept: minus, send: Page_Up, when: paging}
-    - {accept: equal, send: Page_Down, when: has_menu}
-    - {accept: comma, send: Page_Up, when: paging}
-    - {accept: period, send: Page_Down, when: has_menu}
-    - {accept: comma, send: comma, when: predicting}
-    - {accept: period, send: period, when: predicting}
-    - {accept: "Control+Shift+1", select: .next, when: always}
-    - {accept: "Control+Shift+2", toggle: ascii_mode, when: always}
-    - {accept: "Control+Shift+3", toggle: full_shape, when: always}
-    - {accept: "Control+Shift+4", toggle: simplification, when: always}
-    - {accept: "Control+Shift+5", toggle: extended_charset, when: always}
-    - {accept: "Shift+space", toggle: full_shape, when: always}
-    - {accept: "Control+period", toggle: ascii_punct, when: always}
-  import_preset: default
-menu:
-  page_size: 5
+    - table_translator@cangjie
+    - script_translator@pinyin
+  filters:
+    - reverse_lookup_filter@cangjie_lookup
+    - simplifier@zh_simp
+    - simplifier@zh_tw
+    - uniquifier
+
+speller:
+  alphabet: zyxwvutsrqponmlkjihgfedcba
+  delimiter: " '"
+  algebra:
+    - erase/^xx$/
+    - abbrev/^([a-z]).+$/$1/
+    - abbrev/^([zcs]h).+$/$1/
+    - derive/^([nl])ve$/$1ue/correction
+    - derive/^([jqxy])u/$1v/correction
+    - derive/un$/uen/correction
+    - derive/ui$/uei/correction
+    - derive/iu$/iou/correction
+    - derive/([aeiou])ng$/$1gn/correction
+    - derive/([dtngkhrzcs])o(u|ng)$/$1o/correction
+    - derive/ong$/on/correction
+    - derive/ao$/oa/correction
+    - derive/([iu])a(o|ng?)$/a$1$2/correction
+
+translator:
+  dictionary: luna_pinyin
+  preedit_format:
+    - xform/([nljqxy])v/$1ü/
+
+alphabet:
+  tag: alphabet
+  prefix: ':'
+  suffix: ';'
+  tips: 〔西文〕
+  closing_tips: 〔中文〕
+
+cangjie:
+  tag: cangjie
+  dictionary: cangjie5
+  prefix: 'C:'
+  suffix: ';'
+  tips: 〔倉頡〕
+  closing_tips: 〔拼音〕
+  preedit_format:
+    - "xlit|abcdefghijklmnopqrstuvwxyz|日月金木水火土竹戈十大中一弓人心手口尸廿山女田難卜符|"
+  comment_format:
+    - "xlit|abcdefghijklmnopqrstuvwxyz~|日月金木水火土竹戈十大中一弓人心手口尸廿山女田難卜符～|"
+
 pinyin:
   dictionary: luna_pinyin
   enable_user_dict: false
