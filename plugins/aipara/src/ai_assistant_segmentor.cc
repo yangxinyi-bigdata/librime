@@ -204,6 +204,23 @@ bool AiAssistantSegmentor::HandleReplyInput(
     }
   }
 
+  std::string speech_trigger;
+  if (config->GetString("ai_assistant/speech_recognition/chat_triggers",
+                        &speech_trigger) &&
+      !speech_trigger.empty()) {
+    const std::string reply_input_key = "speech_recognition_reply:";
+    if (segmentation_input == reply_input_key) {
+      Segment reply_segment(0, static_cast<int>(segmentation_input.length()));
+      reply_segment.tags.insert("speech_recognition_reply");
+      reply_segment.tags.insert("speech_reply");
+      segmentation->Reset(0);
+      if (!segmentation->AddSegment(reply_segment)) {
+        return false;
+      }
+      return true;
+    }
+  }
+
   return false;
 }
 
@@ -245,6 +262,7 @@ bool AiAssistantSegmentor::HandleChatTrigger(
   bool full_match = false;
 
   size_t longest_prefix = 0;
+  bool matched_speech = false;
   if (an<ConfigMap> prompts = config->GetMap("ai_assistant/ai_prompts")) {
     for (auto it = prompts->begin(); it != prompts->end(); ++it) {
       const std::string& trigger_name = it->first;
@@ -264,7 +282,23 @@ bool AiAssistantSegmentor::HandleChatTrigger(
         matched_prefix = trigger_prefix;
         matched_trigger_name = trigger_name;
         longest_prefix = trigger_prefix.size();
+        matched_speech = false;
       }
+    }
+  }
+
+  std::string speech_trigger;
+  if (config->GetString("ai_assistant/speech_recognition/chat_triggers",
+                        &speech_trigger) &&
+      !speech_trigger.empty()) {
+    if (segmentation_input.size() >= speech_trigger.size() &&
+        segmentation_input.compare(0, speech_trigger.size(),
+                                   speech_trigger) == 0 &&
+        speech_trigger.size() > longest_prefix) {
+      matched_prefix = speech_trigger;
+      matched_trigger_name = "speech_recognition";
+      longest_prefix = speech_trigger.size();
+      matched_speech = true;
     }
   }
 
@@ -276,15 +310,21 @@ bool AiAssistantSegmentor::HandleChatTrigger(
 
   // 构造新的 Segment，标记对应的触发器名称和 AI 对话标签。
   Segment ai_segment(0, static_cast<int>(matched_prefix.size()));
-  ai_segment.tags.insert(matched_trigger_name);
-  ai_segment.tags.insert("ai_talk");
+  if (matched_speech) {
+    ai_segment.tags.insert("speech_recognition");
+  } else {
+    ai_segment.tags.insert(matched_trigger_name);
+    ai_segment.tags.insert("ai_talk");
+  }
 
   segmentation->Reset(0);
   if (!segmentation->AddSegment(ai_segment)) {
     return false;
   }
 
-  context->set_property("current_ai_context", matched_trigger_name);
+  if (!matched_speech) {
+    context->set_property("current_ai_context", matched_trigger_name);
+  }
 
   if (full_match) {
     if (should_stop) {

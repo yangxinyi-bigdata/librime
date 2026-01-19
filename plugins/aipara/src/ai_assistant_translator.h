@@ -45,9 +45,11 @@ class AiAssistantTranslator : public Translator {
   void AttachTcpZmq(TcpZmq* client);
 
  private:
-  // 内部数据结构：描述 AI 流的单个数据片段与汇总结果。
+ // 内部数据结构：描述 AI 流的单个数据片段与汇总结果。
   struct AiStreamData;
   struct AiStreamResult;
+  struct SpeechStreamData;
+  struct SpeechStreamResult;
 
   // 工具函数：
   // - 把单个候选封装为一个“一次性翻译流”，供 Rime 消费。
@@ -56,15 +58,26 @@ class AiAssistantTranslator : public Translator {
   an<Translation> HandleAiTalkSegment(const string& input,
                                       const Segment& segment,
                                       Context* context);
+  // - 处理语音识别触发分段（生成“语音输入”候选）。
+  an<Translation> HandleSpeechRecognitionSegment(const string& input,
+                                                 const Segment& segment,
+                                                 Context* context);
   // - 处理清空历史的分段。
   an<Translation> HandleClearHistorySegment(const Segment& segment);
   // - 处理 AI 回复的分段：轮询 socket，解析 JSON，更新上下文缓存，生成候选。
   an<Translation> HandleAiReplySegment(const string& input,
                                        const Segment& segment,
                                        Context* context);
+  // - 处理语音识别回复的分段：轮询 socket，解析 JSON，更新上下文缓存，生成候选。
+  an<Translation> HandleSpeechRecognitionReplySegment(
+      const string& input,
+      const Segment& segment,
+      Context* context);
 
   // 读取最近一次 AI 流消息，并解析为结构化结果。
   AiStreamResult ReadLatestAiStream();
+  // 读取最近一次语音识别流消息，并解析为结构化结果。
+  SpeechStreamResult ReadLatestSpeechStream();
   // 构造一个 SimpleCandidate：
   // type/start/end 用于在 Rime 中标识候选类型与覆盖范围；text 为实际显示文本；
   // preedit 是“预编辑（灰字提示）”；quality 是候选质量分，数值越大越靠前。

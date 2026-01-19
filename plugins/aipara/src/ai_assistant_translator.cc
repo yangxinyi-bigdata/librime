@@ -41,6 +41,7 @@ namespace {
 // 这利只是设置两个常量,应该没什么影响
 constexpr double kAiSocketTimeoutSeconds = 0.1;
 constexpr std::string_view kDefaultWaitingMessage = "等待回复...";
+constexpr std::string_view kSpeechAssistantId = "speech_recognition";
 
 // 从字符串末尾移除指定后缀（若存在）。按值传参（value）允许在函数内就地修改副本，
 // 避免修改调用者的原始字符串。
@@ -98,6 +99,36 @@ struct AiAssistantTranslator::AiStreamResult {
   bool IsError() const { return status == Status::kError; }
 };
 
+// 描述一次语音识别流消息的核心字段：助手标识、文本、错误及是否最终片段。
+struct AiAssistantTranslator::SpeechStreamData {
+  std::string message_type;
+  std::string assistant_id;
+  std::string content;
+  std::string error_message;
+  bool is_partial = false;
+  bool is_final = false;
+  bool is_error = false;
+};
+
+// 读取语音识别流的结果：包含状态（无数据/超时/成功/错误）、解析后的数据等。
+struct AiAssistantTranslator::SpeechStreamResult {
+  enum class Status {
+    kNoData,
+    kTimeout,
+    kSuccess,
+    kError,
+  };
+
+  Status status = Status::kNoData;
+  SpeechStreamData data;
+  std::string raw_message;
+  std::string error_message;
+
+  bool IsSuccess() const { return status == Status::kSuccess; }
+  bool IsTimeout() const { return status == Status::kTimeout; }
+  bool IsError() const { return status == Status::kError; }
+};
+
 AiAssistantTranslator::AiAssistantTranslator(const Ticket& ticket)
     : Translator(ticket),
       logger_(MakeLogger("ai_assistant_translator")) {
@@ -129,6 +160,14 @@ an<Translation> AiAssistantTranslator::Query(const string& input,
   // 清空历史并返回 nullptr。
   if (segment.HasTag("clear_chat_history")) {
     return HandleClearHistorySegment(segment);
+  }
+  // 语音识别触发
+  if (segment.HasTag("speech_recognition")) {
+    return HandleSpeechRecognitionSegment(input, segment, context);
+  }
+  // 语音识别回复
+  if (segment.HasTag("speech_reply")) {
+    return HandleSpeechRecognitionReplySegment(input, segment, context);
   }
   // 如果 segment 包含 ai_talk 标签，调用 HandleAiTalkSegment 处理 AI 对话。
   if (segment.HasTag("ai_talk")) {
@@ -205,6 +244,49 @@ an<Translation> AiAssistantTranslator::HandleAiTalkSegment(
 
   AIPARA_LOG_INFO(logger_,
                   "生成 ai_talk 候选词: " + display_text);
+  return MakeSingleCandidateTranslation(candidate);
+}
+
+// 处理语音识别触发分段：生成提示候选“语音输入”。
+an<Translation> AiAssistantTranslator::HandleSpeechRecognitionSegment(
+    const string& /*input*/,
+    const Segment& segment,
+    Context* context) {
+  if (!context) {
+    return nullptr;
+  }
+
+  Config* config = ResolveConfig();
+  if (!config) {
+    AIPARA_LOG_WARN(logger_,
+                    "No schema config available while handling speech recognition.");
+    return nullptr;
+  }
+
+  std::string trigger_value;
+  if (!config->GetString("ai_assistant/speech_recognition/chat_triggers",
+                         &trigger_value) ||
+      trigger_value.empty()) {
+    return nullptr;
+  }
+
+  std::string display_text;
+  std::string chat_name;
+  if (config->GetString("ai_assistant/speech_recognition/chat_names",
+                        &chat_name) &&
+      !chat_name.empty()) {
+    display_text = chat_name;
+  } else {
+    display_text = trigger_value + "语音输入";
+  }
+
+  auto candidate =
+      MakeCandidate("speech_recognition", segment.start, segment.end,
+                    display_text);
+  if (!candidate) {
+    return nullptr;
+  }
+
   return MakeSingleCandidateTranslation(candidate);
 }
 
@@ -338,6 +420,99 @@ an<Translation> AiAssistantTranslator::HandleAiReplySegment(
   return MakeSingleCandidateTranslation(candidate);
 }
 
+// 处理语音识别回复分段：轮询 socket，解析 JSON，更新上下文并生成候选。
+an<Translation> AiAssistantTranslator::HandleSpeechRecognitionReplySegment(
+    const string& /*input*/,
+    const Segment& segment,
+    Context* context) {
+  if (!context) {
+    return nullptr;
+  }
+
+  const std::string reply_tag = "speech_recognition_reply";
+
+  std::string preedit;
+  if (Config* config = ResolveConfig()) {
+    config->GetString("ai_assistant/speech_recognition/chat_names", &preedit);
+  }
+
+  const std::string stream_state =
+      context->get_property("get_speech_stream");
+  if (stream_state == "stop" || stream_state == "error") {
+    std::string current_content =
+        context->get_property("speech_replay_stream");
+    if (current_content.empty()) {
+      current_content = std::string(kDefaultWaitingMessage);
+    }
+    auto candidate =
+        MakeCandidate(reply_tag, segment.start, segment.end,
+                      current_content, preedit);
+    if (!candidate) {
+      return nullptr;
+    }
+    return MakeSingleCandidateTranslation(candidate);
+  }
+
+  const SpeechStreamResult stream_result = ReadLatestSpeechStream();
+  if (stream_result.IsError()) {
+    AIPARA_LOG_ERROR(
+        logger_, "Speech stream error: " + stream_result.error_message);
+    context->set_property("get_speech_stream", "error");
+    if (!stream_result.error_message.empty()) {
+      context->set_property("speech_replay_stream",
+                            stream_result.error_message);
+    }
+  } else if (stream_result.IsSuccess()) {
+    const bool assistant_match =
+        stream_result.data.assistant_id.empty() ||
+        stream_result.data.assistant_id == kSpeechAssistantId;
+    if (!assistant_match) {
+      AIPARA_LOG_DEBUG(
+          logger_,
+          "Ignore non-speech assistant_id: " +
+              stream_result.data.assistant_id);
+    } else {
+      if (stream_result.data.is_error) {
+        context->set_property("get_speech_stream", "error");
+        if (!stream_result.data.error_message.empty()) {
+          context->set_property("speech_replay_stream",
+                                stream_result.data.error_message);
+        }
+      } else if (stream_result.data.is_final) {
+        context->set_property("get_speech_stream", "stop");
+      } else {
+        context->set_property("get_speech_stream", "starting");
+      }
+    }
+
+    if (assistant_match && !stream_result.data.content.empty()) {
+      context->set_property("speech_replay_stream",
+                            stream_result.data.content);
+    }
+  } else if (stream_result.IsTimeout()) {
+    context->set_property("get_speech_stream", "starting");
+  } else {
+    context->set_property("get_speech_stream", "starting");
+  }
+
+  context->set_property("intercept_select_key", "1");
+
+  std::string current_content =
+      context->get_property("speech_replay_stream");
+  if (current_content.empty()) {
+    current_content = std::string(kDefaultWaitingMessage);
+  }
+
+  auto candidate =
+      MakeCandidate(reply_tag, segment.start, segment.end,
+                    current_content, preedit);
+  if (!candidate) {
+    return nullptr;
+  }
+
+  return MakeSingleCandidateTranslation(candidate);
+}
+
 Config* AiAssistantTranslator::ResolveConfig() const {
   if (!engine_) {
     return nullptr;
@@ -457,6 +632,152 @@ AiAssistantTranslator::ReadLatestAiStream() {
   }
 
   if (result.data.has_error && result.error_message.empty() &&
+      !result.data.error_message.empty()) {
+    result.error_message = result.data.error_message;
+  }
+
+  return result;
+}
+
+AiAssistantTranslator::SpeechStreamResult
+AiAssistantTranslator::ReadLatestSpeechStream() {
+  SpeechStreamResult result;
+  if (!tcp_zmq_) {
+    result.status = SpeechStreamResult::Status::kError;
+    result.error_message = "TcpZmq not attached.";
+    return result;
+  }
+
+  if (Config* config = ResolveConfig()) {
+    tcp_zmq_->RefreshCurveConfig(config);
+  }
+
+  const TcpZmq::LatestAiMessage latest =
+      tcp_zmq_->ReadLatestFromAiSocket(kAiSocketTimeoutSeconds);
+
+  switch (latest.status) {
+    case TcpZmq::LatestStatus::kSuccess:
+      break;
+    case TcpZmq::LatestStatus::kTimeout:
+      result.status = SpeechStreamResult::Status::kTimeout;
+      return result;
+    case TcpZmq::LatestStatus::kNoData:
+      result.status = SpeechStreamResult::Status::kNoData;
+      return result;
+    case TcpZmq::LatestStatus::kError:
+      result.status = SpeechStreamResult::Status::kError;
+      result.error_message =
+          latest.error_msg.value_or("TcpZmq read error.");
+      return result;
+  }
+
+  result.raw_message = latest.raw_message;
+  if (result.raw_message.empty()) {
+    result.status = SpeechStreamResult::Status::kNoData;
+    return result;
+  }
+
+  rapidjson::Document doc;
+  if (doc.Parse(result.raw_message.c_str()).HasParseError()) {
+    result.status = SpeechStreamResult::Status::kError;
+    result.error_message = std::string("JSON parse error: ") +
+                           rapidjson::GetParseError_En(
+                               doc.GetParseError()) +
+                           " at offset " +
+                           std::to_string(doc.GetErrorOffset());
+    return result;
+  }
+
+  result.status = SpeechStreamResult::Status::kSuccess;
+
+  const rapidjson::Value* payload = &doc;
+  if (doc.HasMember("data") && doc["data"].IsObject()) {
+    payload = &doc["data"];
+  }
+
+  auto read_string = [](const rapidjson::Value& obj,
+                        const char* key,
+                        std::string* out) -> bool {
+    if (!out || !obj.HasMember(key) || !obj[key].IsString()) {
+      return false;
+    }
+    *out = std::string(obj[key].GetString(), obj[key].GetStringLength());
+    return true;
+  };
+
+  auto read_bool = [](const rapidjson::Value& obj,
+                      const char* key,
+                      bool* out) -> bool {
+    if (!out || !obj.HasMember(key) || !obj[key].IsBool()) {
+      return false;
+    }
+    *out = obj[key].GetBool();
+    return true;
+  };
+
+  if (doc.HasMember("messege_type") && doc["messege_type"].IsString()) {
+    result.data.message_type = doc["messege_type"].GetString();
+  }
+
+  if (!read_string(doc, "assistant_id", &result.data.assistant_id)) {
+    if (payload != &doc) {
+      read_string(*payload, "assistant_id", &result.data.assistant_id);
+    }
+  }
+
+  if (!read_string(*payload, "content", &result.data.content)) {
+    if (payload != &doc) {
+      read_string(doc, "content", &result.data.content);
+    }
+  }
+
+  if (!read_bool(*payload, "is_partial", &result.data.is_partial)) {
+    if (payload != &doc) {
+      read_bool(doc, "is_partial", &result.data.is_partial);
+    }
+  }
+
+  if (!read_bool(*payload, "is_final", &result.data.is_final)) {
+    if (payload != &doc) {
+      read_bool(doc, "is_final", &result.data.is_final);
+    }
+  }
+
+  if (!read_bool(*payload, "is_error", &result.data.is_error)) {
+    if (payload != &doc) {
+      read_bool(doc, "is_error", &result.data.is_error);
+    }
+  }
+
+  if (!result.data.is_error) {
+    read_bool(*payload, "error", &result.data.is_error);
+    if (payload != &doc && !result.data.is_error) {
+      read_bool(doc, "error", &result.data.is_error);
+    }
+  }
+
+  if (payload->HasMember("error_msg") &&
+      (*payload)["error_msg"].IsString()) {
+    result.data.is_error = true;
+    result.data.error_message = (*payload)["error_msg"].GetString();
+  } else if (payload->HasMember("error_message") &&
+             (*payload)["error_message"].IsString()) {
+    result.data.is_error = true;
+    result.data.error_message = (*payload)["error_message"].GetString();
+  }
+
+  if (doc.HasMember("status") && doc["status"].IsString()) {
+    const std::string status_value = doc["status"].GetString();
+    if (status_value == "error") {
+      result.data.is_error = true;
+      if (payload->HasMember("message") &&
+          (*payload)["message"].IsString()) {
+        result.data.error_message = (*payload)["message"].GetString();
+      }
+    }
+  }
+
+  if (result.data.is_error && result.error_message.empty() &&
       !result.data.error_message.empty()) {
     result.error_message = result.data.error_message;
   }

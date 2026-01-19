@@ -197,6 +197,12 @@ std::string MaybeStripPrefix(const std::string& text,
   return text;
 }
 
+struct SpeechRecognitionConfig {
+  std::string chat_trigger;
+  std::string chat_name;
+  std::string description;
+};
+
 AiAssistantConfig LoadAiAssistantConfig(Config* config) {
   AiAssistantConfig result;
   if (!config) {
@@ -275,6 +281,20 @@ AiAssistantConfig LoadAiAssistantConfig(Config* config) {
         0, static_cast<std::size_t>(result.page_size));
   }
 
+  return result;
+}
+
+SpeechRecognitionConfig LoadSpeechRecognitionConfig(Config* config) {
+  SpeechRecognitionConfig result;
+  if (!config) {
+    return result;
+  }
+  config->GetString("ai_assistant/speech_recognition/chat_triggers",
+                    &result.chat_trigger);
+  config->GetString("ai_assistant/speech_recognition/chat_names",
+                    &result.chat_name);
+  config->GetString("ai_assistant/speech_recognition/description",
+                    &result.description);
   return result;
 }
 
@@ -380,6 +400,12 @@ ProcessResult CloudInputProcessor::ProcessKeyEvent(const KeyEvent& key_event) {
   if (auto ai_result = HandleAiTalkSelection(key_repr, context, config);
       ai_result != kNoop) {
     return ai_result;
+  }
+
+  if (auto speech_result =
+          HandleSpeechRecognitionSelection(key_repr, context, config);
+      speech_result != kNoop) {
+    return speech_result;
   }
 
   // 处理原始英文输入（直接输入英文而不转换）
@@ -510,6 +536,8 @@ bool CloudInputProcessor::HandleControlF13(const std::string& key_repr,
   }
   if (context->get_property("get_cloud_stream") == "starting") {
     context->RefreshNonConfirmedComposition();
+  } else if (context->get_property("get_speech_stream") == "starting") {
+    context->RefreshNonConfirmedComposition();
   }
   return true;
 }
@@ -532,12 +560,29 @@ ProcessResult CloudInputProcessor::HandleInterceptSelectKey(
     context->set_property("input_string", "");
   }
 
+  const bool speech_mode =
+      context->get_property("speech_recognition_mode") == "1";
+
   std::string commit_text = context->GetCommitText();
-  if (commit_text.empty()) {
+  if (commit_text.empty() && speech_mode) {
+    commit_text = context->get_property("speech_replay_stream");
+  }
+  if (commit_text.empty() && !speech_mode) {
     commit_text = context->get_property("ai_replay_stream");
   }
-  if (commit_text.empty()) {
+  if (commit_text.empty() && !speech_mode) {
     commit_text = context->input();
+  }
+  if (speech_mode && commit_text.empty()) {
+    context->Clear();
+    if (tcp_zmq_) {
+      tcp_zmq_->SyncWithServer(engine_, false, false,
+                               "stop_speech_recognition");
+    }
+    context->set_property("get_speech_stream", "idle");
+    context->set_property("speech_recognition_mode", "0");
+    context->set_property("speech_replay_stream", "");
+    return kAccepted;
   }
 
   AiAssistantConfig ai_config = LoadAiAssistantConfig(config);
@@ -568,6 +613,15 @@ ProcessResult CloudInputProcessor::HandleInterceptSelectKey(
             tcp_zmq_->SyncWithServer(engine_, false, false, "button", "paste");
       }
     }
+    if (speech_mode) {
+      if (tcp_zmq_) {
+        tcp_zmq_->SyncWithServer(engine_, false, false,
+                                 "stop_speech_recognition");
+      }
+      context->set_property("get_speech_stream", "idle");
+      context->set_property("speech_recognition_mode", "0");
+      context->set_property("speech_replay_stream", "");
+    }
     return success ? kAccepted : kNoop;
   }
 
@@ -588,6 +642,15 @@ ProcessResult CloudInputProcessor::HandleInterceptSelectKey(
     } else {
       tcp_zmq_->SyncWithServer(engine_, true, true);
     }
+  }
+  if (speech_mode) {
+    if (tcp_zmq_) {
+      tcp_zmq_->SyncWithServer(engine_, false, false,
+                               "stop_speech_recognition");
+    }
+    context->set_property("get_speech_stream", "idle");
+    context->set_property("speech_recognition_mode", "0");
+    context->set_property("speech_replay_stream", "");
   }
 
   return kAccepted;
@@ -730,6 +793,74 @@ ProcessResult CloudInputProcessor::HandleAiTalkSelection(
   } else {
     context->Clear();
   }
+
+  return kAccepted;
+}
+
+ProcessResult CloudInputProcessor::HandleSpeechRecognitionSelection(
+    const std::string& key_repr,
+    Context* context,
+    Config* config) {
+  if (!context) {
+    return kNoop;
+  }
+
+  const SpeechRecognitionConfig speech_config =
+      LoadSpeechRecognitionConfig(config);
+  if (speech_config.chat_trigger.empty()) {
+    return kNoop;
+  }
+
+  AiAssistantConfig ai_config = LoadAiAssistantConfig(config);
+
+  std::size_t select_index = 0;
+  if (!IsSelectKey(key_repr, ai_config, &select_index)) {
+    return kNoop;
+  }
+
+  Composition& composition = context->composition();
+  if (composition.empty()) {
+    return kNoop;
+  }
+
+  Segment& first_segment = composition.front();
+  if (!first_segment.HasTag("speech_recognition")) {
+    return kNoop;
+  }
+
+  Segment& last_segment = composition.back();
+  if (!last_segment.menu || last_segment.menu->empty()) {
+    return kNoop;
+  }
+
+  if (select_index >= last_segment.menu->candidate_count()) {
+    return kNoop;
+  }
+
+  an<Candidate> candidate = last_segment.menu->GetCandidateAt(select_index);
+  if (!candidate) {
+    return kNoop;
+  }
+
+  const std::string& input = context->input();
+  const bool is_last_candidate = candidate->end() == input.size();
+  if (!is_last_candidate) {
+    return kNoop;
+  }
+
+  if (tcp_zmq_) {
+    tcp_zmq_->ReadAllFromAiSocket();
+    tcp_zmq_->SyncWithServer(engine_, false, false,
+                             "start_speech_recognition");
+  }
+
+  context->Clear();
+  context->set_property("speech_recognition_mode", "1");
+  context->set_property("get_speech_stream", "starting");
+  context->set_property("speech_replay_stream", "");
+  context->set_property("intercept_select_key", "1");
+  context->set_input("speech_recognition_reply:");
+  context->RefreshNonConfirmedComposition();
 
   return kAccepted;
 }
