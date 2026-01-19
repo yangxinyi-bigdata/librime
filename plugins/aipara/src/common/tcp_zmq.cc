@@ -2313,6 +2313,25 @@ bool TcpZmq::SendChatMessage(
   return WriteToAiSocket(json_data);
 }
 
+bool TcpZmq::SendAiCommand(const std::string& message_type) {
+  if (message_type.empty()) {
+    return false;
+  }
+  rapidjson::Document doc(rapidjson::kObjectType);
+  auto& allocator = doc.GetAllocator();
+  doc.AddMember(
+      "messege_type",
+      rapidjson::Value(message_type.c_str(), allocator), allocator);
+  const std::string client_id = EnsureAiIdentity();
+  doc.AddMember("client_id",
+                rapidjson::Value(client_id.c_str(), allocator), allocator);
+
+  const std::string json_data = JsonStringify(doc);
+  AIPARA_LOG_DEBUG(
+      logger_, "发送AI指令json_data: " + json_data);
+  return WriteToAiSocket(json_data);
+}
+
 bool TcpZmq::IsSystemReady() const {
   return is_initialized_ &&
          (rime_state_.is_connected || ai_convert_.is_connected);

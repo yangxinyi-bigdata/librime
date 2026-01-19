@@ -58,10 +58,6 @@ class AiAssistantTranslator : public Translator {
   an<Translation> HandleAiTalkSegment(const string& input,
                                       const Segment& segment,
                                       Context* context);
-  // - 处理语音识别触发分段（生成“语音输入”候选）。
-  an<Translation> HandleSpeechRecognitionSegment(const string& input,
-                                                 const Segment& segment,
-                                                 Context* context);
   // - 处理清空历史的分段。
   an<Translation> HandleClearHistorySegment(const Segment& segment);
   // - 处理 AI 回复的分段：轮询 socket，解析 JSON，更新上下文缓存，生成候选。

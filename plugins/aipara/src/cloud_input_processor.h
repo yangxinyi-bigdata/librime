@@ -72,10 +72,6 @@ class CloudInputProcessor : public Processor {
   ProcessResult HandleAiTalkSelection(const std::string& key_repr,
                                       rime::Context* context,
                                       Config* config);
-  ProcessResult HandleSpeechRecognitionSelection(
-      const std::string& key_repr,
-      rime::Context* context,
-      Config* config);
   ProcessResult HandleRawEnglishInput(const KeyEvent& key_event,
                                       const std::string& key_repr,
                                       rime::Context* context);

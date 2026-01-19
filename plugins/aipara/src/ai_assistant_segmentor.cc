@@ -204,23 +204,6 @@ bool AiAssistantSegmentor::HandleReplyInput(
     }
   }
 
-  std::string speech_trigger;
-  if (config->GetString("ai_assistant/speech_recognition/chat_triggers",
-                        &speech_trigger) &&
-      !speech_trigger.empty()) {
-    const std::string reply_input_key = "speech_recognition_reply:";
-    if (segmentation_input == reply_input_key) {
-      Segment reply_segment(0, static_cast<int>(segmentation_input.length()));
-      reply_segment.tags.insert("speech_recognition_reply");
-      reply_segment.tags.insert("speech_reply");
-      segmentation->Reset(0);
-      if (!segmentation->AddSegment(reply_segment)) {
-        return false;
-      }
-      return true;
-    }
-  }
-
   return false;
 }
 

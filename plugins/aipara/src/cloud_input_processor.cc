@@ -197,11 +197,6 @@ std::string MaybeStripPrefix(const std::string& text,
   return text;
 }
 
-struct SpeechRecognitionConfig {
-  std::string chat_trigger;
-  std::string chat_name;
-  std::string description;
-};
 
 AiAssistantConfig LoadAiAssistantConfig(Config* config) {
   AiAssistantConfig result;
@@ -284,19 +279,6 @@ AiAssistantConfig LoadAiAssistantConfig(Config* config) {
   return result;
 }
 
-SpeechRecognitionConfig LoadSpeechRecognitionConfig(Config* config) {
-  SpeechRecognitionConfig result;
-  if (!config) {
-    return result;
-  }
-  config->GetString("ai_assistant/speech_recognition/chat_triggers",
-                    &result.chat_trigger);
-  config->GetString("ai_assistant/speech_recognition/chat_names",
-                    &result.chat_name);
-  config->GetString("ai_assistant/speech_recognition/description",
-                    &result.description);
-  return result;
-}
 
 }  // namespace
 
@@ -400,12 +382,6 @@ ProcessResult CloudInputProcessor::ProcessKeyEvent(const KeyEvent& key_event) {
   if (auto ai_result = HandleAiTalkSelection(key_repr, context, config);
       ai_result != kNoop) {
     return ai_result;
-  }
-
-  if (auto speech_result =
-          HandleSpeechRecognitionSelection(key_repr, context, config);
-      speech_result != kNoop) {
-    return speech_result;
   }
 
   // 处理原始英文输入（直接输入英文而不转换）
@@ -576,25 +552,30 @@ ProcessResult CloudInputProcessor::HandleInterceptSelectKey(
   if (speech_mode && commit_text.empty()) {
     context->Clear();
     if (tcp_zmq_) {
-      tcp_zmq_->SyncWithServer(engine_, false, false,
-                               "stop_speech_recognition");
+      tcp_zmq_->SendAiCommand("stop_speech_recognition");
     }
     context->set_property("get_speech_stream", "idle");
+    context->set_property("speech_recognition_started", "0");
     context->set_property("speech_recognition_mode", "0");
     context->set_property("speech_replay_stream", "");
     return kAccepted;
   }
 
   AiAssistantConfig ai_config = LoadAiAssistantConfig(config);
-  if (!ai_config.behavior.auto_commit_reply_send_key.empty() &&
-      ai_config.behavior.auto_commit_reply_send_key != "none") {
+  if (speech_mode) {
+    context->set_property("send_key", "");
+  } else if (!ai_config.behavior.auto_commit_reply_send_key.empty() &&
+             ai_config.behavior.auto_commit_reply_send_key != "none") {
     context->set_property("send_key",
                           ai_config.behavior.auto_commit_reply_send_key);
   }
 
+  const bool apply_reply_prefix =
+      ai_config.behavior.add_reply_prefix && !speech_mode;
+
   if (ContainsNewline(commit_text)) {
     context->Clear();
-    if (ai_config.behavior.add_reply_prefix) {
+    if (apply_reply_prefix) {
       const std::string script_text = context->GetScriptText();
       if (!script_text.empty()) {
         engine_->CommitText(script_text);
@@ -615,17 +596,17 @@ ProcessResult CloudInputProcessor::HandleInterceptSelectKey(
     }
     if (speech_mode) {
       if (tcp_zmq_) {
-        tcp_zmq_->SyncWithServer(engine_, false, false,
-                                 "stop_speech_recognition");
+        tcp_zmq_->SendAiCommand("stop_speech_recognition");
       }
       context->set_property("get_speech_stream", "idle");
+      context->set_property("speech_recognition_started", "0");
       context->set_property("speech_recognition_mode", "0");
       context->set_property("speech_replay_stream", "");
     }
     return success ? kAccepted : kNoop;
   }
 
-  if (ai_config.behavior.add_reply_prefix) {
+  if (apply_reply_prefix) {
     const std::string script_text = context->GetScriptText();
     engine_->CommitText(script_text + commit_text);
     context->Clear();
@@ -645,10 +626,10 @@ ProcessResult CloudInputProcessor::HandleInterceptSelectKey(
   }
   if (speech_mode) {
     if (tcp_zmq_) {
-      tcp_zmq_->SyncWithServer(engine_, false, false,
-                               "stop_speech_recognition");
+      tcp_zmq_->SendAiCommand("stop_speech_recognition");
     }
     context->set_property("get_speech_stream", "idle");
+    context->set_property("speech_recognition_started", "0");
     context->set_property("speech_recognition_mode", "0");
     context->set_property("speech_replay_stream", "");
   }
@@ -793,74 +774,6 @@ ProcessResult CloudInputProcessor::HandleAiTalkSelection(
   } else {
     context->Clear();
   }
-
-  return kAccepted;
-}
-
-ProcessResult CloudInputProcessor::HandleSpeechRecognitionSelection(
-    const std::string& key_repr,
-    Context* context,
-    Config* config) {
-  if (!context) {
-    return kNoop;
-  }
-
-  const SpeechRecognitionConfig speech_config =
-      LoadSpeechRecognitionConfig(config);
-  if (speech_config.chat_trigger.empty()) {
-    return kNoop;
-  }
-
-  AiAssistantConfig ai_config = LoadAiAssistantConfig(config);
-
-  std::size_t select_index = 0;
-  if (!IsSelectKey(key_repr, ai_config, &select_index)) {
-    return kNoop;
-  }
-
-  Composition& composition = context->composition();
-  if (composition.empty()) {
-    return kNoop;
-  }
-
-  Segment& first_segment = composition.front();
-  if (!first_segment.HasTag("speech_recognition")) {
-    return kNoop;
-  }
-
-  Segment& last_segment = composition.back();
-  if (!last_segment.menu || last_segment.menu->empty()) {
-    return kNoop;
-  }
-
-  if (select_index >= last_segment.menu->candidate_count()) {
-    return kNoop;
-  }
-
-  an<Candidate> candidate = last_segment.menu->GetCandidateAt(select_index);
-  if (!candidate) {
-    return kNoop;
-  }
-
-  const std::string& input = context->input();
-  const bool is_last_candidate = candidate->end() == input.size();
-  if (!is_last_candidate) {
-    return kNoop;
-  }
-
-  if (tcp_zmq_) {
-    tcp_zmq_->ReadAllFromAiSocket();
-    tcp_zmq_->SyncWithServer(engine_, false, false,
-                             "start_speech_recognition");
-  }
-
-  context->Clear();
-  context->set_property("speech_recognition_mode", "1");
-  context->set_property("get_speech_stream", "starting");
-  context->set_property("speech_replay_stream", "");
-  context->set_property("intercept_select_key", "1");
-  context->set_input("speech_recognition_reply:");
-  context->RefreshNonConfirmedComposition();
 
   return kAccepted;
 }

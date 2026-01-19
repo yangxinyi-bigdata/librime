@@ -161,12 +161,8 @@ an<Translation> AiAssistantTranslator::Query(const string& input,
   if (segment.HasTag("clear_chat_history")) {
     return HandleClearHistorySegment(segment);
   }
-  // 语音识别触发
+  // 语音识别
   if (segment.HasTag("speech_recognition")) {
-    return HandleSpeechRecognitionSegment(input, segment, context);
-  }
-  // 语音识别回复
-  if (segment.HasTag("speech_reply")) {
     return HandleSpeechRecognitionReplySegment(input, segment, context);
   }
   // 如果 segment 包含 ai_talk 标签，调用 HandleAiTalkSegment 处理 AI 对话。
@@ -244,49 +240,6 @@ an<Translation> AiAssistantTranslator::HandleAiTalkSegment(
 
   AIPARA_LOG_INFO(logger_,
                   "生成 ai_talk 候选词: " + display_text);
-  return MakeSingleCandidateTranslation(candidate);
-}
-
-// 处理语音识别触发分段：生成提示候选“语音输入”。
-an<Translation> AiAssistantTranslator::HandleSpeechRecognitionSegment(
-    const string& /*input*/,
-    const Segment& segment,
-    Context* context) {
-  if (!context) {
-    return nullptr;
-  }
-
-  Config* config = ResolveConfig();
-  if (!config) {
-    AIPARA_LOG_WARN(logger_,
-                    "No schema config available while handling speech recognition.");
-    return nullptr;
-  }
-
-  std::string trigger_value;
-  if (!config->GetString("ai_assistant/speech_recognition/chat_triggers",
-                         &trigger_value) ||
-      trigger_value.empty()) {
-    return nullptr;
-  }
-
-  std::string display_text;
-  std::string chat_name;
-  if (config->GetString("ai_assistant/speech_recognition/chat_names",
-                        &chat_name) &&
-      !chat_name.empty()) {
-    display_text = chat_name;
-  } else {
-    display_text = trigger_value + "语音输入";
-  }
-
-  auto candidate =
-      MakeCandidate("speech_recognition", segment.start, segment.end,
-                    display_text);
-  if (!candidate) {
-    return nullptr;
-  }
-
   return MakeSingleCandidateTranslation(candidate);
 }
 
@@ -429,11 +382,23 @@ an<Translation> AiAssistantTranslator::HandleSpeechRecognitionReplySegment(
     return nullptr;
   }
 
-  const std::string reply_tag = "speech_recognition_reply";
+  const std::string reply_tag = "speech_recognition";
 
   std::string preedit;
   if (Config* config = ResolveConfig()) {
     config->GetString("ai_assistant/speech_recognition/chat_names", &preedit);
+  }
+
+  if (context->get_property("speech_recognition_started") != "1") {
+    if (tcp_zmq_) {
+      tcp_zmq_->ReadAllFromAiSocket();
+      tcp_zmq_->SendAiCommand("start_speech_recognition");
+    }
+    context->set_property("speech_recognition_started", "1");
+    context->set_property("speech_recognition_mode", "1");
+    context->set_property("get_speech_stream", "starting");
+    context->set_property("speech_replay_stream", "");
+    context->set_property("intercept_select_key", "1");
   }
 
   const std::string stream_state =
