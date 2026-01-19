@@ -62,16 +62,6 @@ std::string RemoveCharacters(const std::string& text, std::string_view chars) {
   return result;
 }
 
-std::string Utf8First(const std::string& text) {
-  if (text.empty()) {
-    return std::string();
-  }
-  auto it = text.begin();
-  auto next = it;
-  utf8::next(next, text.end());
-  return std::string(it, next);
-}
-
 std::string Utf8Last(const std::string& text) {
   if (text.empty()) {
     return std::string();
@@ -441,7 +431,7 @@ an<Translation> AuxCodeFilterV3::Apply(an<Translation> translation,
 
   if (fuzhu_mode == "before") {
     set_fuzhuma_ = true;
-    return HandleBeforeMode(last_code, translation);
+    return HandleBeforeMode(last_code, current_end, translation);
   }
 
   if (fuzhu_mode == "after") {
@@ -560,42 +550,67 @@ an<Translation> AuxCodeFilterV3::HandleAllMode(
 
 an<Translation> AuxCodeFilterV3::HandleBeforeMode(
     const std::string& last_code,
+    size_t current_end,
     an<Translation> translation) {
-  CandidateList head;
-  CandidateList tail;
-  size_t index = 0;
+  CandidateList direct_output;
+  std::map<size_t, CandidateList> matched_by_position;
+  CandidateList insert_last;
+  bool first_left_cand = false;
 
   while (!translation->exhausted()) {
     an<Candidate> cand = translation->Peek();
     translation->Next();
-    ++index;
 
-    if (index == 1) {
-      head.push_back(cand);
+    size_t cand_end = cand->end();
+    long left_position =
+        static_cast<long>(current_end) - static_cast<long>(cand_end);
+
+    if (left_position == 0) {
       continue;
     }
 
-    std::string first_char = Utf8First(cand->text());
-    if (MatchAuxiliaryCode(first_char, last_code) > 0) {
-      std::string new_preedit = cand->preedit();
-      new_preedit.append(last_code);
-      auto rewritten = New<AuxRewrittenCandidate>(
-          cand, std::nullopt, new_preedit, cand->end() + 1);
-      head.push_back(rewritten);
+    if (!first_left_cand) {
+      direct_output.push_back(cand);
+      first_left_cand = true;
+      continue;
+    }
+
+    size_t matched_position = 0;
+    size_t char_index = 0;
+    for (auto it = cand->text().begin(); it != cand->text().end();) {
+      auto next = it;
+      utf8::next(next, cand->text().end());
+      std::string character(it, next);
+      ++char_index;
+      if (MatchAuxiliaryCode(character, last_code) == 1) {
+        matched_position = char_index;
+        break;
+      }
+      it = next;
+    }
+
+    if (matched_position == 0) {
+      insert_last.push_back(cand);
     } else {
-      tail.push_back(cand);
+      matched_by_position[matched_position].push_back(cand);
     }
   }
 
-  if (head.empty() && tail.empty()) {
+  if (direct_output.empty() && matched_by_position.empty() &&
+      insert_last.empty()) {
     return translation;
   }
 
   auto fifo = New<FifoTranslation>();
-  for (auto& cand : head) {
+  for (auto& cand : direct_output) {
     fifo->Append(cand);
   }
-  for (auto& cand : tail) {
+  for (auto& [pos, list] : matched_by_position) {
+    for (auto& cand : list) {
+      fifo->Append(cand);
+    }
+  }
+  for (auto& cand : insert_last) {
     fifo->Append(cand);
   }
   return fifo;

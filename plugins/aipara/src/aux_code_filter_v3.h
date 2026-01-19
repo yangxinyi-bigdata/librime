@@ -39,6 +39,7 @@ class AuxCodeFilterV3 : public Filter {
                                 size_t current_end,
                                 an<Translation> translation);
   an<Translation> HandleBeforeMode(const std::string& last_code,
+                                   size_t current_end,
                                    an<Translation> translation);
   an<Translation> HandleAfterMode(const std::string& last_code,
                                   an<Translation> translation);
