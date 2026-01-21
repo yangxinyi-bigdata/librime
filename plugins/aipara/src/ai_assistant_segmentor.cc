@@ -58,6 +58,12 @@ bool AiAssistantSegmentor::Proceed(Segmentation* segmentation) {
   const size_t current_start = segmentation->GetCurrentStartPosition();
   const size_t current_end = segmentation->GetCurrentEndPosition();
   const std::string ai_context = context->get_property("current_ai_context");
+  AIPARA_LOG_DEBUG(logger_,
+                   "Segmentor Proceed input='" + segmentation_input +
+                       "' confirmed_pos=" + std::to_string(confirmed_pos) +
+                       " current_start=" + std::to_string(current_start) +
+                       " current_end=" + std::to_string(current_end) +
+                       " current_ai_context=" + ai_context);
 
   // 检查是否触发“清空历史”快捷键。
   if (HandleClearHistoryShortcut(segmentation, ai_context, segmentation_input,
@@ -67,6 +73,21 @@ bool AiAssistantSegmentor::Proceed(Segmentation* segmentation) {
 
   // 如果用户已经确认过前缀，就不再处理，避免破坏正常输入流程。
   if (confirmed_pos != 0 || current_start != 0) {
+    AIPARA_LOG_DEBUG(logger_,
+                     "Segmentor non-zero positions, try speech trigger after "
+                     "AI prefix");
+    bool should_stop = false;
+    if (HandleSpeechTriggerAfterAiPrefix(segmentation, context,
+                                         segmentation_input, current_start,
+                                         config, &should_stop)) {
+      AIPARA_LOG_INFO(
+          logger_,
+          "Segmentor added speech segment after AI prefix, should_stop=" +
+              std::string(should_stop ? "true" : "false"));
+      return !should_stop;
+    }
+    AIPARA_LOG_DEBUG(logger_,
+                     "Segmentor speech-after-AI not handled");
     return true;
   }
 
@@ -229,6 +250,105 @@ bool AiAssistantSegmentor::HandlePromptSegment(
   return true;
 }
 
+bool AiAssistantSegmentor::HandleSpeechTriggerAfterAiPrefix(
+    Segmentation* segmentation,
+    Context* context,
+    const std::string& segmentation_input,
+    size_t current_start,
+    Config* config,
+    bool* should_stop) const {
+  if (!segmentation || !context || !config) {
+    return false;
+  }
+  if (current_start == 0 || segmentation_input.empty()) {
+    return false;
+  }
+
+  const std::string ai_context = context->get_property("current_ai_context");
+  if (ai_context.empty()) {
+    AIPARA_LOG_DEBUG(logger_, "SpeechAfterAi: empty current_ai_context");
+    return false;
+  }
+
+  std::string ai_prefix;
+  if (!config->GetString(
+          "ai_assistant/ai_prompts/" + ai_context + "/chat_triggers",
+          &ai_prefix) ||
+      ai_prefix.empty()) {
+    AIPARA_LOG_DEBUG(logger_, "SpeechAfterAi: missing ai_prefix for " +
+                                  ai_context);
+    return false;
+  }
+
+  std::string speech_trigger;
+  if (!config->GetString("ai_assistant/speech_recognition/chat_triggers",
+                        &speech_trigger) ||
+      speech_trigger.empty()) {
+    AIPARA_LOG_DEBUG(logger_, "SpeechAfterAi: missing speech_trigger");
+    return false;
+  }
+
+  AIPARA_LOG_DEBUG(
+      logger_,
+      "SpeechAfterAi input='" + segmentation_input + "' ai_prefix='" +
+          ai_prefix + "' speech_trigger='" + speech_trigger +
+          "' current_start=" + std::to_string(current_start));
+
+  if (segmentation_input.size() <
+      current_start + speech_trigger.size()) {
+    return false;
+  }
+
+  if (segmentation_input.compare(0, ai_prefix.size(), ai_prefix) != 0) {
+    AIPARA_LOG_DEBUG(logger_, "SpeechAfterAi: prefix mismatch");
+    return false;
+  }
+
+  if (segmentation_input.compare(current_start, speech_trigger.size(),
+                                 speech_trigger) != 0) {
+    AIPARA_LOG_DEBUG(logger_, "SpeechAfterAi: speech trigger mismatch");
+    return false;
+  }
+
+  Segment ai_segment(0, static_cast<int>(ai_prefix.size()));
+  ai_segment.tags.insert(ai_context);
+  ai_segment.tags.insert("ai_talk");
+
+  Segment speech_segment(static_cast<int>(current_start),
+                         static_cast<int>(current_start +
+                                          speech_trigger.size()));
+  speech_segment.tags.insert("speech_recognition");
+
+  segmentation->Reset(0);
+  if (!segmentation->AddSegment(ai_segment)) {
+    AIPARA_LOG_WARN(logger_, "SpeechAfterAi: failed to add ai_segment");
+    return false;
+  }
+  if (!segmentation->Forward()) {
+    AIPARA_LOG_WARN(logger_, "SpeechAfterAi: failed to forward after ai_segment");
+    return false;
+  }
+  if (!segmentation->AddSegment(speech_segment)) {
+    AIPARA_LOG_WARN(logger_, "SpeechAfterAi: failed to add speech_segment");
+    return false;
+  }
+  AIPARA_LOG_INFO(logger_,
+                  "SpeechAfterAi: added segments ai[0," +
+                      std::to_string(ai_prefix.size()) + ") speech[" +
+                      std::to_string(current_start) + "," +
+                      std::to_string(current_start + speech_trigger.size()) +
+                      ") total_segments=" +
+                      std::to_string(segmentation->size()));
+
+  if (segmentation_input.size() ==
+      current_start + speech_trigger.size()) {
+    if (should_stop) {
+      *should_stop = true;
+    }
+  }
+  return true;
+}
+
 bool AiAssistantSegmentor::HandleChatTrigger(
     Segmentation* segmentation,
     Context* context,
@@ -290,6 +410,13 @@ bool AiAssistantSegmentor::HandleChatTrigger(
   }
 
   full_match = segmentation_input.size() == matched_prefix.size();
+  AIPARA_LOG_DEBUG(
+      logger_,
+      "HandleChatTrigger input='" + segmentation_input +
+          "' matched_prefix='" + matched_prefix +
+          "' matched_trigger_name='" + matched_trigger_name +
+          "' full_match=" + std::string(full_match ? "true" : "false") +
+          " matched_speech=" + std::string(matched_speech ? "true" : "false"));
 
   // 构造新的 Segment，标记对应的触发器名称和 AI 对话标签。
   Segment ai_segment(0, static_cast<int>(matched_prefix.size()));
@@ -307,6 +434,41 @@ bool AiAssistantSegmentor::HandleChatTrigger(
 
   if (!matched_speech) {
     context->set_property("current_ai_context", matched_trigger_name);
+  }
+
+  if (!matched_speech && full_match == false) {
+    std::string speech_trigger;
+    if (config->GetString("ai_assistant/speech_recognition/chat_triggers",
+                          &speech_trigger) &&
+        !speech_trigger.empty()) {
+      const std::size_t speech_start = matched_prefix.size();
+      if (segmentation_input.size() >=
+              speech_start + speech_trigger.size() &&
+          segmentation_input.compare(speech_start, speech_trigger.size(),
+                                     speech_trigger) == 0) {
+        if (!segmentation->Forward()) {
+          AIPARA_LOG_WARN(logger_,
+                          "HandleChatTrigger: failed to forward before speech");
+          return true;
+        }
+        Segment speech_segment(static_cast<int>(speech_start),
+                               static_cast<int>(speech_start +
+                                                speech_trigger.size()));
+        speech_segment.tags.insert("speech_recognition");
+        if (!segmentation->AddSegment(speech_segment)) {
+          AIPARA_LOG_WARN(logger_,
+                          "HandleChatTrigger: failed to add speech segment");
+          return false;
+        }
+        if (segmentation_input.size() ==
+            speech_start + speech_trigger.size()) {
+          if (should_stop) {
+            *should_stop = true;
+          }
+        }
+        return true;
+      }
+    }
   }
 
   if (full_match) {

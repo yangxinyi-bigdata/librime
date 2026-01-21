@@ -431,7 +431,7 @@ an<Translation> AuxCodeFilterV3::Apply(an<Translation> translation,
 
   if (fuzhu_mode == "before") {
     set_fuzhuma_ = true;
-    return HandleBeforeMode(last_code, current_end, translation);
+    return HandleBeforeMode(last_code, current_end, input.size(), translation);
   }
 
   if (fuzhu_mode == "after") {
@@ -551,11 +551,51 @@ an<Translation> AuxCodeFilterV3::HandleAllMode(
 an<Translation> AuxCodeFilterV3::HandleBeforeMode(
     const std::string& last_code,
     size_t current_end,
+    size_t input_size,
     an<Translation> translation) {
   CandidateList direct_output;
   std::map<size_t, CandidateList> matched_by_position;
   CandidateList insert_last;
+  CandidateList insert_second;
   bool first_left_cand = false;
+
+  if (input_size == 3) {
+    while (!translation->exhausted()) {
+      an<Candidate> cand = translation->Peek();
+      translation->Next();
+
+      const std::string& cand_text = cand->text();
+      if (utf8::distance(cand_text.begin(), cand_text.end()) != 1) {
+        continue;
+      }
+
+      int match = MatchAuxiliaryCode(cand_text, last_code);
+      if (match == 1) {
+        direct_output.push_back(cand);
+      } else if (match == 2) {
+        insert_second.push_back(cand);
+      } else {
+        insert_last.push_back(cand);
+      }
+    }
+
+    if (direct_output.empty() && insert_second.empty() &&
+        insert_last.empty()) {
+      return translation;
+    }
+
+    auto fifo = New<FifoTranslation>();
+    for (auto& cand : direct_output) {
+      fifo->Append(cand);
+    }
+    for (auto& cand : insert_second) {
+      fifo->Append(cand);
+    }
+    for (auto& cand : insert_last) {
+      fifo->Append(cand);
+    }
+    return fifo;
+  }
 
   while (!translation->exhausted()) {
     an<Candidate> cand = translation->Peek();

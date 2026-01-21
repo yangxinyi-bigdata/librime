@@ -535,6 +535,14 @@ ProcessResult CloudInputProcessor::HandleInterceptSelectKey(
     return kNoop;
   }
 
+  Composition& composition = context->composition();
+  if (!composition.empty()) {
+    Segment& first_segment = composition.front();
+    if (first_segment.HasTag("ai_talk")) {
+      return kNoop;
+    }
+  }
+
   if (!(key_repr == "space" || key_repr == "1")) {
     return kNoop;
   }
@@ -837,6 +845,25 @@ ProcessResult CloudInputProcessor::HandleAiTalkSelection(
     engine_->CommitText(final_commit);
   } else {
     context->Clear();
+  }
+
+  const bool speech_active =
+      context->get_property("speech_recognition_mode") == "1" ||
+      context->get_property("speech_recognition_started") == "1" ||
+      context->get_property("get_speech_stream") == "starting" ||
+      context->get_property("get_speech_optimize_stream") != "idle";
+  if (speech_active) {
+    if (tcp_zmq_) {
+      tcp_zmq_->SendAiCommand("stop_speech_recognition");
+    }
+    context->set_property("speech_recognition_mode", "0");
+    context->set_property("speech_recognition_started", "0");
+    context->set_property("get_speech_stream", "idle");
+    context->set_property("get_speech_optimize_stream", "idle");
+    context->set_property("speech_optimize_raw", "");
+    context->set_property("speech_optimize_original", "");
+    context->set_property("speech_replay_stream", "");
+    context->set_property("intercept_select_key", "0");
   }
 
   return kAccepted;

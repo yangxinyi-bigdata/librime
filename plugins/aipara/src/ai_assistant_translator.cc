@@ -190,6 +190,8 @@ an<Translation> AiAssistantTranslator::Query(const string& input,
   }
   // 语音识别
   if (segment.HasTag("speech_recognition")) {
+    AIPARA_LOG_INFO(logger_, "Translator speech_recognition segment, input='" +
+                                 input + "'");
     return HandleSpeechRecognitionReplySegment(input, segment, context);
   }
   // 如果 segment 包含 ai_talk 标签，调用 HandleAiTalkSegment 处理 AI 对话。
@@ -410,6 +412,18 @@ an<Translation> AiAssistantTranslator::HandleSpeechRecognitionReplySegment(
   }
 
   const std::string reply_tag = "speech_recognition";
+  AIPARA_LOG_DEBUG(logger_,
+                   "SpeechReply: segment range=[" +
+                       std::to_string(segment.start) + "," +
+                       std::to_string(segment.end) + "]" +
+                       " optimize_state=" +
+                       context->get_property("get_speech_optimize_stream") +
+                       " speech_started=" +
+                       context->get_property("speech_recognition_started") +
+                       " speech_mode=" +
+                       context->get_property("speech_recognition_mode") +
+                       " get_speech_stream=" +
+                       context->get_property("get_speech_stream"));
 
   std::string preedit;
   if (Config* config = ResolveConfig()) {
@@ -419,6 +433,9 @@ an<Translation> AiAssistantTranslator::HandleSpeechRecognitionReplySegment(
   const std::string optimize_state =
       context->get_property("get_speech_optimize_stream");
   if (optimize_state == "starting" || optimize_state == "stop") {
+    AIPARA_LOG_INFO(logger_,
+                    "SpeechOptimize: enter optimize flow, state=" +
+                        optimize_state);
     SpeechOptimizeData optimize_data;
     bool has_data = false;
     if (optimize_state == "starting") {
@@ -432,6 +449,12 @@ an<Translation> AiAssistantTranslator::HandleSpeechRecognitionReplySegment(
         optimize_data = optimize_result.data;
         if (!optimize_data.ai_candidates.empty()) {
           has_data = true;
+          AIPARA_LOG_INFO(
+              logger_,
+              "SpeechOptimize: received ai_candidates=" +
+                  std::to_string(optimize_data.ai_candidates.size()) +
+                  " is_final=" +
+                  std::string(optimize_data.is_final ? "true" : "false"));
           context->set_property("speech_optimize_raw",
                                 optimize_result.raw_message);
           if (!optimize_data.original_input.empty()) {
@@ -446,6 +469,7 @@ an<Translation> AiAssistantTranslator::HandleSpeechRecognitionReplySegment(
       const std::string cached_raw =
           context->get_property("speech_optimize_raw");
       if (!cached_raw.empty()) {
+        AIPARA_LOG_DEBUG(logger_, "SpeechOptimize: use cached raw message");
         SpeechOptimizeResult cached_result;
         cached_result.raw_message = cached_raw;
         cached_result.status = SpeechOptimizeResult::Status::kSuccess;
@@ -514,7 +538,11 @@ an<Translation> AiAssistantTranslator::HandleSpeechRecognitionReplySegment(
         context->get_property("speech_replay_stream");
     std::string display_text = current_content;
     if (display_text.empty()) {
-      display_text = std::string(kDefaultWaitingMessage);
+      if (!preedit.empty()) {
+        display_text = preedit;
+      } else {
+        display_text = std::string(kDefaultWaitingMessage);
+      }
     }
     auto fallback_candidate =
         MakeCandidate("speech_recognition",
@@ -531,6 +559,7 @@ an<Translation> AiAssistantTranslator::HandleSpeechRecognitionReplySegment(
   if (context->get_property("speech_recognition_started") != "1") {
     if (tcp_zmq_) {
       tcp_zmq_->ReadAllFromAiSocket();
+      AIPARA_LOG_INFO(logger_, "SpeechReply: send start_speech_recognition");
       tcp_zmq_->SendAiCommand("start_speech_recognition");
     }
     context->set_property("speech_recognition_started", "1");
@@ -546,10 +575,17 @@ an<Translation> AiAssistantTranslator::HandleSpeechRecognitionReplySegment(
   const std::string stream_state =
       context->get_property("get_speech_stream");
   if (stream_state == "stop" || stream_state == "error") {
+    AIPARA_LOG_DEBUG(logger_,
+                     "SpeechReply: stream_state=" + stream_state +
+                         ", return cached content");
     std::string current_content =
         context->get_property("speech_replay_stream");
     if (current_content.empty()) {
-      current_content = std::string(kDefaultWaitingMessage);
+      if (!preedit.empty()) {
+        current_content = preedit;
+      } else {
+        current_content = std::string(kDefaultWaitingMessage);
+      }
     }
     auto candidate =
         MakeCandidate(reply_tag, segment.start, segment.end,
@@ -561,6 +597,20 @@ an<Translation> AiAssistantTranslator::HandleSpeechRecognitionReplySegment(
   }
 
   const SpeechStreamResult stream_result = ReadLatestSpeechStream();
+  AIPARA_LOG_DEBUG(
+      logger_,
+      "SpeechReply: read stream status=" +
+          std::to_string(static_cast<int>(stream_result.status)) +
+          " msg_type=" + stream_result.data.message_type +
+          " assistant_id=" + stream_result.data.assistant_id +
+          " content_len=" +
+          std::to_string(stream_result.data.content.size()) +
+          " is_partial=" +
+          std::string(stream_result.data.is_partial ? "true" : "false") +
+          " is_final=" +
+          std::string(stream_result.data.is_final ? "true" : "false") +
+          " is_error=" +
+          std::string(stream_result.data.is_error ? "true" : "false"));
   if (stream_result.IsError()) {
     AIPARA_LOG_ERROR(
         logger_, "Speech stream error: " + stream_result.error_message);
@@ -607,7 +657,11 @@ an<Translation> AiAssistantTranslator::HandleSpeechRecognitionReplySegment(
   std::string current_content =
       context->get_property("speech_replay_stream");
   if (current_content.empty()) {
-    current_content = std::string(kDefaultWaitingMessage);
+    if (!preedit.empty()) {
+      current_content = preedit;
+    } else {
+      current_content = std::string(kDefaultWaitingMessage);
+    }
   }
 
   auto candidate =

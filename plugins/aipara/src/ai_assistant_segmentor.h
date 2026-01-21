@@ -72,6 +72,12 @@ class AiAssistantSegmentor : public Segmentor {
   bool HandlePromptSegment(Segmentation* segmentation,
                            const std::string& segmentation_input,
                            const AiAssistantSegmentorBehavior& behavior) const;
+  bool HandleSpeechTriggerAfterAiPrefix(Segmentation* segmentation,
+                                        Context* context,
+                                        const std::string& segmentation_input,
+                                        size_t current_start,
+                                        Config* config,
+                                        bool* should_stop) const;
   bool HandleChatTrigger(Segmentation* segmentation,
                          Context* context,
                          const std::string& segmentation_input,
