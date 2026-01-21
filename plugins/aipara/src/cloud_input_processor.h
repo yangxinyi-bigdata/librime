@@ -79,6 +79,9 @@ class CloudInputProcessor : public Processor {
                                           const std::string& key_repr,
                                           rime::Context* context,
                                           Config* config);
+  ProcessResult HandleSpeechOptimizeTrigger(const std::string& key_repr,
+                                            rime::Context* context,
+                                            Config* config);
   void SetCloudConvertFlag(rime::Context* context,
                            Config* config) const;
   ProcessResult HandleAiCandidateCommit(const std::string& key_repr,

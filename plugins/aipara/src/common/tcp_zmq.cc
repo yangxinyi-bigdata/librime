@@ -2332,6 +2332,28 @@ bool TcpZmq::SendAiCommand(const std::string& message_type) {
   return WriteToAiSocket(json_data);
 }
 
+bool TcpZmq::SendSpeechRecognitionOptimize(
+    const std::string& candidates_text) {
+  if (candidates_text.empty()) {
+    return false;
+  }
+  rapidjson::Document doc(rapidjson::kObjectType);
+  auto& allocator = doc.GetAllocator();
+  doc.AddMember("messege_type", "speech_recognition_optimize", allocator);
+  const std::string client_id = EnsureAiIdentity();
+  doc.AddMember("client_id",
+                rapidjson::Value(client_id.c_str(), allocator), allocator);
+  doc.AddMember(
+      "candidates_text",
+      rapidjson::Value(candidates_text.c_str(), allocator), allocator);
+  doc.AddMember("timestamp", NowMs(), allocator);
+
+  const std::string json_data = JsonStringify(doc);
+  AIPARA_LOG_DEBUG(
+      logger_, "发送语音识别AI优化请求json_data: " + json_data);
+  return WriteToAiSocket(json_data);
+}
+
 bool TcpZmq::IsSystemReady() const {
   return is_initialized_ &&
          (rime_state_.is_connected || ai_convert_.is_connected);

@@ -14,6 +14,7 @@
 #include <set>
 #include <utility>
 #include <string_view>
+#include <vector>
 
 // 处理可能的宏污染：有些平台/头文件可能把 Bool/True/False 定义为宏，
 // 这里统一取消定义，避免与 C++ 关键字/标识符冲突。
@@ -121,6 +122,32 @@ struct AiAssistantTranslator::SpeechStreamResult {
 
   Status status = Status::kNoData;
   SpeechStreamData data;
+  std::string raw_message;
+  std::string error_message;
+
+  bool IsSuccess() const { return status == Status::kSuccess; }
+  bool IsTimeout() const { return status == Status::kTimeout; }
+  bool IsError() const { return status == Status::kError; }
+};
+
+// 描述一次语音识别优化消息的字段。
+struct AiAssistantTranslator::SpeechOptimizeData {
+  std::string original_input;
+  std::vector<std::pair<std::string, std::string>> ai_candidates;
+  bool is_partial = false;
+  bool is_final = false;
+};
+
+struct AiAssistantTranslator::SpeechOptimizeResult {
+  enum class Status {
+    kNoData,
+    kTimeout,
+    kSuccess,
+    kError,
+  };
+
+  Status status = Status::kNoData;
+  SpeechOptimizeData data;
   std::string raw_message;
   std::string error_message;
 
@@ -389,6 +416,118 @@ an<Translation> AiAssistantTranslator::HandleSpeechRecognitionReplySegment(
     config->GetString("ai_assistant/speech_recognition/chat_names", &preedit);
   }
 
+  const std::string optimize_state =
+      context->get_property("get_speech_optimize_stream");
+  if (optimize_state == "starting" || optimize_state == "stop") {
+    SpeechOptimizeData optimize_data;
+    bool has_data = false;
+    if (optimize_state == "starting") {
+      const SpeechOptimizeResult optimize_result =
+          ReadLatestSpeechOptimizeStream();
+      if (optimize_result.IsError()) {
+        AIPARA_LOG_ERROR(logger_,
+                         "Speech optimize stream error: " +
+                             optimize_result.error_message);
+      } else if (optimize_result.IsSuccess()) {
+        optimize_data = optimize_result.data;
+        if (!optimize_data.ai_candidates.empty()) {
+          has_data = true;
+          context->set_property("speech_optimize_raw",
+                                optimize_result.raw_message);
+          if (!optimize_data.original_input.empty()) {
+            context->set_property("speech_optimize_original",
+                                  optimize_data.original_input);
+          }
+        }
+      }
+    }
+
+    if (!has_data) {
+      const std::string cached_raw =
+          context->get_property("speech_optimize_raw");
+      if (!cached_raw.empty()) {
+        SpeechOptimizeResult cached_result;
+        cached_result.raw_message = cached_raw;
+        cached_result.status = SpeechOptimizeResult::Status::kSuccess;
+        if (ParseSpeechOptimizeMessage(cached_raw, &cached_result.data,
+                                       &cached_result.error_message)) {
+          optimize_data = cached_result.data;
+          has_data = !optimize_data.ai_candidates.empty();
+        }
+      }
+    }
+
+    if (has_data) {
+      if (optimize_state == "starting") {
+        if (optimize_data.is_final) {
+          context->set_property("get_speech_optimize_stream", "stop");
+        } else {
+          context->set_property("get_speech_optimize_stream", "starting");
+        }
+      }
+      const std::string original_text =
+          !optimize_data.original_input.empty()
+              ? optimize_data.original_input
+              : context->get_property("speech_optimize_original");
+      std::vector<an<Candidate>> candidates;
+      double quality = 1000.0;
+      for (const auto& item : optimize_data.ai_candidates) {
+        std::string comment = u8" [";
+        if (item.second.empty()) {
+          comment.append(u8"AI优化");
+        } else {
+          comment.append(item.second);
+        }
+        comment.append(u8"]");
+        auto candidate = MakeCandidateWithComment(
+            "speech_optimize",
+            segment.start,
+            segment.end,
+            item.first,
+            comment,
+            preedit,
+            quality);
+        quality -= 1.0;
+        if (candidate) {
+          candidates.push_back(candidate);
+        }
+      }
+      if (!original_text.empty()) {
+        auto candidate = MakeCandidateWithComment(
+            "speech_recognition",
+            segment.start,
+            segment.end,
+            original_text,
+            std::string(u8" [语音识别]"),
+            preedit,
+            800.0);
+        if (candidate) {
+          candidates.push_back(candidate);
+        }
+      }
+      if (!candidates.empty()) {
+        return MakeTranslationFromCandidates(candidates);
+      }
+    }
+
+    const std::string current_content =
+        context->get_property("speech_replay_stream");
+    std::string display_text = current_content;
+    if (display_text.empty()) {
+      display_text = std::string(kDefaultWaitingMessage);
+    }
+    auto fallback_candidate =
+        MakeCandidate("speech_recognition",
+                      segment.start,
+                      segment.end,
+                      display_text,
+                      preedit);
+    if (!fallback_candidate) {
+      return nullptr;
+    }
+    return MakeSingleCandidateTranslation(fallback_candidate);
+  }
+
   if (context->get_property("speech_recognition_started") != "1") {
     if (tcp_zmq_) {
       tcp_zmq_->ReadAllFromAiSocket();
@@ -397,6 +536,9 @@ an<Translation> AiAssistantTranslator::HandleSpeechRecognitionReplySegment(
     context->set_property("speech_recognition_started", "1");
     context->set_property("speech_recognition_mode", "1");
     context->set_property("get_speech_stream", "starting");
+    context->set_property("get_speech_optimize_stream", "idle");
+    context->set_property("speech_optimize_raw", "");
+    context->set_property("speech_optimize_original", "");
     context->set_property("speech_replay_stream", "");
     context->set_property("intercept_select_key", "1");
   }
@@ -750,6 +892,144 @@ AiAssistantTranslator::ReadLatestSpeechStream() {
   return result;
 }
 
+AiAssistantTranslator::SpeechOptimizeResult
+AiAssistantTranslator::ReadLatestSpeechOptimizeStream() {
+  SpeechOptimizeResult result;
+  if (!tcp_zmq_) {
+    result.status = SpeechOptimizeResult::Status::kError;
+    result.error_message = "TcpZmq not attached.";
+    return result;
+  }
+
+  if (Config* config = ResolveConfig()) {
+    tcp_zmq_->RefreshCurveConfig(config);
+  }
+
+  const TcpZmq::LatestAiMessage latest =
+      tcp_zmq_->ReadLatestFromAiSocket(kAiSocketTimeoutSeconds);
+
+  switch (latest.status) {
+    case TcpZmq::LatestStatus::kSuccess:
+      break;
+    case TcpZmq::LatestStatus::kTimeout:
+      result.status = SpeechOptimizeResult::Status::kTimeout;
+      return result;
+    case TcpZmq::LatestStatus::kNoData:
+      result.status = SpeechOptimizeResult::Status::kNoData;
+      return result;
+    case TcpZmq::LatestStatus::kError:
+      result.status = SpeechOptimizeResult::Status::kError;
+      result.error_message =
+          latest.error_msg.value_or("TcpZmq read error.");
+      return result;
+  }
+
+  result.raw_message = latest.raw_message;
+  if (result.raw_message.empty()) {
+    result.status = SpeechOptimizeResult::Status::kNoData;
+    return result;
+  }
+
+  std::string error_message;
+  if (!ParseSpeechOptimizeMessage(result.raw_message, &result.data,
+                                  &error_message)) {
+    if (!error_message.empty()) {
+      result.status = SpeechOptimizeResult::Status::kError;
+      result.error_message = error_message;
+    } else {
+      result.status = SpeechOptimizeResult::Status::kNoData;
+    }
+    return result;
+  }
+
+  result.status = SpeechOptimizeResult::Status::kSuccess;
+  return result;
+}
+
+bool AiAssistantTranslator::ParseSpeechOptimizeMessage(
+    const std::string& raw_message,
+    SpeechOptimizeData* data,
+    std::string* error_message) const {
+  if (!data) {
+    return false;
+  }
+  if (raw_message.empty()) {
+    return false;
+  }
+  data->original_input.clear();
+  data->ai_candidates.clear();
+  data->is_partial = false;
+  data->is_final = false;
+
+  rapidjson::Document doc;
+  if (doc.Parse(raw_message.c_str()).HasParseError()) {
+    if (error_message) {
+      *error_message = std::string("JSON parse error: ") +
+                       rapidjson::GetParseError_En(
+                           doc.GetParseError()) +
+                       " at offset " +
+                       std::to_string(doc.GetErrorOffset());
+    }
+    return false;
+  }
+
+  if (!doc.HasMember("messege_type") ||
+      !doc["messege_type"].IsString()) {
+    return false;
+  }
+  const std::string message_type =
+      doc["messege_type"].GetString();
+  if (message_type != "speech_recognition_optimize_result") {
+    return false;
+  }
+
+  if (doc.HasMember("original_input") &&
+      doc["original_input"].IsString()) {
+    data->original_input.assign(
+        doc["original_input"].GetString(),
+        doc["original_input"].GetStringLength());
+  }
+  if (doc.HasMember("is_partial") && doc["is_partial"].IsBool()) {
+    data->is_partial = doc["is_partial"].GetBool();
+  }
+  if (doc.HasMember("is_final") && doc["is_final"].IsBool()) {
+    data->is_final = doc["is_final"].GetBool();
+  }
+
+  data->ai_candidates.clear();
+  if (doc.HasMember("ai_candidates") &&
+      doc["ai_candidates"].IsArray()) {
+    for (const auto& item : doc["ai_candidates"].GetArray()) {
+      std::string value;
+      std::string comment_name;
+      if (item.IsString()) {
+        value.assign(item.GetString(), item.GetStringLength());
+      } else if (item.IsObject()) {
+        if (item.HasMember("value") && item["value"].IsString()) {
+          value.assign(item["value"].GetString(),
+                       item["value"].GetStringLength());
+        } else if (item.HasMember("text") &&
+                   item["text"].IsString()) {
+          value.assign(item["text"].GetString(),
+                       item["text"].GetStringLength());
+        }
+        if (item.HasMember("comment_name") &&
+            item["comment_name"].IsString()) {
+          comment_name.assign(
+              item["comment_name"].GetString(),
+              item["comment_name"].GetStringLength());
+        }
+      }
+      if (!value.empty()) {
+        data->ai_candidates.emplace_back(std::move(value),
+                                         std::move(comment_name));
+      }
+    }
+  }
+
+  return !data->ai_candidates.empty() || !data->original_input.empty();
+}
+
 // 构建 Rime 的 SimpleCandidate，并设置质量与预编辑文本。
 an<Candidate> AiAssistantTranslator::MakeCandidate(
     const std::string& type,
@@ -768,6 +1048,36 @@ an<Candidate> AiAssistantTranslator::MakeCandidate(
     candidate->set_preedit(preedit);
   }
   return candidate;
+}
+
+an<Candidate> AiAssistantTranslator::MakeCandidateWithComment(
+    const std::string& type,
+    size_t start,
+    size_t end,
+    const std::string& text,
+    const std::string& comment,
+    const std::string& preedit,
+    double quality) const {
+  auto candidate = New<SimpleCandidate>(type, start, end, text, comment, preedit);
+  if (!candidate) {
+    return nullptr;
+  }
+  candidate->set_quality(quality);
+  return candidate;
+}
+
+an<Translation> AiAssistantTranslator::MakeTranslationFromCandidates(
+    const std::vector<an<Candidate>>& candidates) const {
+  auto translation = New<FifoTranslation>();
+  if (!translation) {
+    return nullptr;
+  }
+  for (const auto& candidate : candidates) {
+    if (candidate) {
+      translation->Append(candidate);
+    }
+  }
+  return translation;
 }
 
 // 把单个候选写入一个 FIFO 翻译流中返回。

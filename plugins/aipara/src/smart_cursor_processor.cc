@@ -345,6 +345,25 @@ void SmartCursorProcessor::OnUpdate(Context* context) {
     context->set_property("intercept_select_key", "0");
   }
 
+  const bool speech_active =
+      context->get_property("speech_recognition_mode") == "1" ||
+      context->get_property("speech_recognition_started") == "1" ||
+      context->get_property("get_speech_stream") == "starting" ||
+      context->get_property("get_speech_optimize_stream") == "starting";
+  if (speech_active) {
+    if (tcp_zmq_) {
+      tcp_zmq_->SendAiCommand("stop_speech_recognition");
+    }
+    context->set_property("speech_recognition_mode", "0");
+    context->set_property("speech_recognition_started", "0");
+    context->set_property("get_speech_stream", "idle");
+    context->set_property("get_speech_optimize_stream", "idle");
+    context->set_property("speech_optimize_raw", "");
+    context->set_property("speech_optimize_original", "");
+    context->set_property("speech_replay_stream", "");
+    context->set_property("intercept_select_key", "0");
+  }
+
   if (context->get_property("get_cloud_stream") != "idle") {
     context->set_property("get_cloud_stream", "idle");
   }

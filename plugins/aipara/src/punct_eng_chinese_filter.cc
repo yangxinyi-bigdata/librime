@@ -84,6 +84,21 @@ std::string MakeCloudPrompt(const std::string& symbol_display) {
   return prompt;
 }
 
+std::string MakeSpeechOptimizePrompt(const std::string& symbol_display) {
+  std::string prompt(u8"    ▶ [");
+  prompt.append(symbol_display);
+  prompt.append(u8"AI优化]  ");
+  return prompt;
+}
+
+std::string MakeSpeechOptimizeRunningPrompt() {
+  return std::string(u8"    ▶ [AI优化中...]");
+}
+
+std::string MakeSpeechOptimizeDonePrompt() {
+  return std::string(u8"    ▶ [AI优化完成]");
+}
+
 std::string MakeSearchPrompt(const std::string& value) {
   if (value.empty()) {
     return std::string(kSearchPrompt);
@@ -172,6 +187,10 @@ an<Translation> PunctEngChineseFilter::Apply(an<Translation> translation,
         context->get_property("cloud_convert_flag");
     const std::string get_cloud_stream =
         context->get_property("get_cloud_stream");
+    const std::string speech_recognition_mode =
+        context->get_property("speech_recognition_mode");
+    const std::string get_speech_optimize_stream =
+        context->get_property("get_speech_optimize_stream");
 
     // 根据不同状态设置不同的提示信息
     if (search_move) {
@@ -185,6 +204,22 @@ an<Translation> PunctEngChineseFilter::Apply(an<Translation> translation,
     } else if (rawenglish_prompt == "1") {
       // 英文模式提示
       const std::string prompt(kRawEnglishPrompt);
+      if (segment->prompt != prompt) {
+        segment->prompt = prompt;
+      }
+    } else if (get_speech_optimize_stream == "starting") {
+      const std::string prompt = MakeSpeechOptimizeRunningPrompt();
+      if (segment->prompt != prompt) {
+        segment->prompt = prompt;
+      }
+    } else if (get_speech_optimize_stream == "stop") {
+      const std::string prompt = MakeSpeechOptimizeDonePrompt();
+      if (segment->prompt != prompt) {
+        segment->prompt = prompt;
+      }
+    } else if (speech_recognition_mode == "1") {
+      const std::string prompt =
+          MakeSpeechOptimizePrompt(CloudSymbolDisplay(cloud_convert_symbol));
       if (segment->prompt != prompt) {
         segment->prompt = prompt;
       }

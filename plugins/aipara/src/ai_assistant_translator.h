@@ -14,6 +14,7 @@
 #include <rime/translator.h>
 
 #include <string>
+#include <vector>
 #include "common/logger.h"
 
 namespace rime {
@@ -50,6 +51,8 @@ class AiAssistantTranslator : public Translator {
   struct AiStreamResult;
   struct SpeechStreamData;
   struct SpeechStreamResult;
+  struct SpeechOptimizeData;
+  struct SpeechOptimizeResult;
 
   // 工具函数：
   // - 把单个候选封装为一个“一次性翻译流”，供 Rime 消费。
@@ -74,6 +77,11 @@ class AiAssistantTranslator : public Translator {
   AiStreamResult ReadLatestAiStream();
   // 读取最近一次语音识别流消息，并解析为结构化结果。
   SpeechStreamResult ReadLatestSpeechStream();
+  // 读取最近一次语音识别优化流消息，并解析为结构化结果。
+  SpeechOptimizeResult ReadLatestSpeechOptimizeStream();
+  bool ParseSpeechOptimizeMessage(const std::string& raw_message,
+                                  SpeechOptimizeData* data,
+                                  std::string* error_message) const;
   // 构造一个 SimpleCandidate：
   // type/start/end 用于在 Rime 中标识候选类型与覆盖范围；text 为实际显示文本；
   // preedit 是“预编辑（灰字提示）”；quality 是候选质量分，数值越大越靠前。
@@ -83,6 +91,15 @@ class AiAssistantTranslator : public Translator {
                               const std::string& text,
                               const std::string& preedit = {},
                               double quality = 1000.0) const;
+  an<Candidate> MakeCandidateWithComment(const std::string& type,
+                                         size_t start,
+                                         size_t end,
+                                         const std::string& text,
+                                         const std::string& comment,
+                                         const std::string& preedit = {},
+                                         double quality = 1000.0) const;
+  an<Translation> MakeTranslationFromCandidates(
+      const std::vector<an<Candidate>>& candidates) const;
 
   Config* ResolveConfig() const;
   std::string BuildPromptPath(const std::string& prompt,

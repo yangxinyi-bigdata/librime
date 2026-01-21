@@ -394,6 +394,12 @@ ProcessResult CloudInputProcessor::ProcessKeyEvent(const KeyEvent& key_event) {
   SetCloudConvertFlag(context, config);
 
   // 处理云转换触发事件（如特定组合键触发云输入）
+  if (auto speech_optimize =
+          HandleSpeechOptimizeTrigger(key_repr, context, config);
+      speech_optimize != kNoop) {
+    return speech_optimize;
+  }
+
   if (auto convert =
           HandleCloudConvertTrigger(key_event, key_repr, context, config);
       convert != kNoop) {
@@ -514,6 +520,9 @@ bool CloudInputProcessor::HandleControlF13(const std::string& key_repr,
     context->RefreshNonConfirmedComposition();
   } else if (context->get_property("get_speech_stream") == "starting") {
     context->RefreshNonConfirmedComposition();
+  } else if (context->get_property("get_speech_optimize_stream") ==
+             "starting") {
+    context->RefreshNonConfirmedComposition();
   }
   return true;
 }
@@ -555,6 +564,9 @@ ProcessResult CloudInputProcessor::HandleInterceptSelectKey(
       tcp_zmq_->SendAiCommand("stop_speech_recognition");
     }
     context->set_property("get_speech_stream", "idle");
+    context->set_property("get_speech_optimize_stream", "idle");
+    context->set_property("speech_optimize_raw", "");
+    context->set_property("speech_optimize_original", "");
     context->set_property("speech_recognition_started", "0");
     context->set_property("speech_recognition_mode", "0");
     context->set_property("speech_replay_stream", "");
@@ -599,6 +611,9 @@ ProcessResult CloudInputProcessor::HandleInterceptSelectKey(
         tcp_zmq_->SendAiCommand("stop_speech_recognition");
       }
       context->set_property("get_speech_stream", "idle");
+      context->set_property("get_speech_optimize_stream", "idle");
+      context->set_property("speech_optimize_raw", "");
+      context->set_property("speech_optimize_original", "");
       context->set_property("speech_recognition_started", "0");
       context->set_property("speech_recognition_mode", "0");
       context->set_property("speech_replay_stream", "");
@@ -629,11 +644,60 @@ ProcessResult CloudInputProcessor::HandleInterceptSelectKey(
       tcp_zmq_->SendAiCommand("stop_speech_recognition");
     }
     context->set_property("get_speech_stream", "idle");
+    context->set_property("get_speech_optimize_stream", "idle");
+    context->set_property("speech_optimize_raw", "");
+    context->set_property("speech_optimize_original", "");
     context->set_property("speech_recognition_started", "0");
     context->set_property("speech_recognition_mode", "0");
     context->set_property("speech_replay_stream", "");
   }
 
+  return kAccepted;
+}
+
+ProcessResult CloudInputProcessor::HandleSpeechOptimizeTrigger(
+    const std::string& key_repr,
+    Context* context,
+    Config* config) {
+  if (!context) {
+    return kNoop;
+  }
+
+  std::string cloud_convert_symbol = "Return";
+  if (config) {
+    std::string value;
+    if (config->GetString("translator/cloud_convert_symbol", &value) &&
+        !value.empty()) {
+      cloud_convert_symbol = value;
+    }
+  }
+
+  if (key_repr != cloud_convert_symbol) {
+    return kNoop;
+  }
+
+  if (context->get_property("speech_recognition_mode") != "1") {
+    return kNoop;
+  }
+
+  const std::string candidates_text =
+      context->get_property("speech_replay_stream");
+  if (candidates_text.empty()) {
+    return kNoop;
+  }
+
+  if (tcp_zmq_) {
+    tcp_zmq_->ReadAllFromAiSocket();
+    tcp_zmq_->SendAiCommand("stop_speech_recognition");
+    tcp_zmq_->SendSpeechRecognitionOptimize(candidates_text);
+  }
+
+  context->set_property("get_speech_stream", "stop");
+  context->set_property("get_speech_optimize_stream", "starting");
+  context->set_property("speech_optimize_original", candidates_text);
+  context->set_property("speech_optimize_raw", "");
+  context->set_property("intercept_select_key", "1");
+  context->RefreshNonConfirmedComposition();
   return kAccepted;
 }
 

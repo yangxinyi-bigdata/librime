@@ -187,6 +187,7 @@ class TcpZmq {
       const std::string& assistant_id,
       const std::optional<std::string>& response_key = std::nullopt);
   bool SendAiCommand(const std::string& message_type);
+  bool SendSpeechRecognitionOptimize(const std::string& candidates_text);
 
   bool IsSystemReady() const;
   bool IsRimeSocketReady() const;
