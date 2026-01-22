@@ -1,5 +1,7 @@
 build/
+build-aipara/
 build-static/
+weasel-overlay/
 debug/
 dist/
 data/*
