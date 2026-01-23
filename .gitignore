@@ -10,6 +10,7 @@ lib/*
 bin/*
 share/*
 deps/*/*
+deps/boost_src/
 # plugins/*/
 env.bat
 node_modules/

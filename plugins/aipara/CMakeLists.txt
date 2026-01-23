@@ -16,9 +16,12 @@ target_include_directories(rime-aipara-objs PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 find_library(ZeroMQ_LIBRARY NAMES zmq)
-if(NOT ZeroMQ_LIBRARY)
+find_path(ZeroMQ_INCLUDE_DIR NAMES zmq.h)
+if(NOT ZeroMQ_LIBRARY OR NOT ZeroMQ_INCLUDE_DIR)
   message(FATAL_ERROR "libzmq 未找到，请安装 ZeroMQ。")
 endif()
+
+target_include_directories(rime-aipara-objs PRIVATE ${ZeroMQ_INCLUDE_DIR})
 
 set(plugin_name rime-aipara PARENT_SCOPE)
 set(plugin_objs $<TARGET_OBJECTS:rime-aipara-objs> PARENT_SCOPE)

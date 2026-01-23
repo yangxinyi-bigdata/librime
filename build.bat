@@ -78,6 +78,8 @@ if %build_deps% == 0 (
 if not defined build_dir set build_dir=build
 if not defined deps_install_prefix set deps_install_prefix=%RIME_ROOT%
 if not defined rime_install_prefix set rime_install_prefix=%RIME_ROOT%\dist
+set prefix_path=%deps_install_prefix%
+if defined EXTRA_CMAKE_PREFIX_PATH set prefix_path=%prefix_path%;%EXTRA_CMAKE_PREFIX_PATH%
 
 if %clean% == 1 (
  rmdir /s /q %build_dir%
@@ -182,7 +184,7 @@ set rime_cmake_flags=%common_cmake_flags%^
  -DBUILD_SHARED_LIBS=%build_shared%^
  -DBUILD_TEST=%build_test%^
  -DENABLE_LOGGING=%enable_logging%^
- -DCMAKE_PREFIX_PATH:PATH="%deps_install_prefix%"^
+ -DCMAKE_PREFIX_PATH:PATH="%prefix_path%"^
  -DCMAKE_INSTALL_PREFIX:PATH="%rime_install_prefix%"
 
 echo on
