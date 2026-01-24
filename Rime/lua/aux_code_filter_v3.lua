@@ -580,84 +580,113 @@ function aux_code_filter.func(translation, env)
             local first_left_cand = false
             local first_preedit
             -- 对所有候选词进行遍历
-            for cand in translation:iter() do
-                count = count + 1
-                local left_position = current_end - cand._end
-                if left_position == 0 then
-                    -- 这种候选词是长度超标的，直接放弃
-                    -- 这些就是最后一个字母参与到组词的数据, 在这里应该有原生的preedit,我直接获取到就可以了
-                    -- 直接获取到preedit, 然后将preedit中的最后一个音节替换为last_code, 然后将替换后的内容作为新的preedit
-                    -- if not first_preedit then
-                    --     first_preedit = cand.preedit or ""
-                    --     -- logger.debug("first_preedit: " .. first_preedit)
-                    --     -- 去掉收尾空格并删除最后一个音节（以空格分隔）
-                    --     local trimmed = first_preedit:gsub("%s+$", "")
-                    --     local without_last = trimmed:match("^(.*)%s+[^%s]+$")
-                    --     first_preedit = without_last or ""
-                    --     logger.debug("first_preedit去除最后一个音节: " .. first_preedit)
-                    -- end
-                else
-                    -- 这种候选词的第一个可以保留，只保留一个就可以
-                    if not first_left_cand then -- 如果还没有则保留一个，保留应该直接yeild
-                        yield(cand)
-                        first_left_cand = true
-                        first_preedit = cand.preedit .. last_code
+
+            if #input == 3 then
+
+                for cand in translation:iter() do
+                    local cand_text = cand.text
+                    if utf8.len(cand_text) == 1 then
+                        -- 单个码点
+                        if fuzhuma_match(cand_text, last_code) == 1 then
+                            yield(cand)
+                        elseif fuzhuma_match(cand_text, last_code) == 2 then
+                            table.insert(insert_second, cand)
+                        else
+                            table.insert(insert_last, cand)
+                        end
+                    end
+                end
+                -- 循环完成之后，依次输出剩余的insert_second和insert_last
+                for _, cand in ipairs(insert_second) do
+                    yield(cand)
+                end
+
+                for _, cand in ipairs(insert_last) do
+                    yield(cand)
+                end
+
+            else -- 不仅仅是三个字母的时候，走这个分支。
+                for cand in translation:iter() do
+                    count = count + 1
+                    local left_position = current_end - cand._end
+                    if left_position == 0 then
+                        -- 这种候选词是长度超标的，直接放弃
+                        -- 这些就是最后一个字母参与到组词的数据, 在这里应该有原生的preedit,我直接获取到就可以了
+                        -- 直接获取到preedit, 然后将preedit中的最后一个音节替换为last_code, 然后将替换后的内容作为新的preedit
+                        -- if not first_preedit then
+                        --     first_preedit = cand.preedit or ""
+                        --     -- logger.debug("first_preedit: " .. first_preedit)
+                        --     -- 去掉收尾空格并删除最后一个音节（以空格分隔）
+                        --     local trimmed = first_preedit:gsub("%s+$", "")
+                        --     local without_last = trimmed:match("^(.*)%s+[^%s]+$")
+                        --     first_preedit = without_last or ""
+                        --     logger.debug("first_preedit去除最后一个音节: " .. first_preedit)
+                        -- end
                     else
                         -- 剩余的长度不足以覆盖全部输入的候选项, 从匹配到字符的顺序进行依次排列
                         local cand_text = cand.text
                         local matched_position = 0
                         local count_char = 0
                         local match_flag = false
-                        -- 遍历候选词中的每个字符
-                        for pos, code in utf8.codes(cand_text) do
-                            count_char = count_char + 1
-                            local char = utf8.char(code)
-
-                            -- 这个地方忘记改了, 有可能返回1,返回2,1就是匹配成功,2是匹配到常用字上面了
-                            if fuzhuma_match(char, last_code) == 1 then
-                                matched_position = count_char
-                                break -- 只要有一个字符匹配就可以了
-                                -- elseif fuzhuma_match(char, last_code) == 2 then
-                                --     -- 要不要匹配常用字呢？不用了把
-                            end
-                        end
-
-                        if matched_position == 0 then
-                            -- 没有匹配
-                            table.insert(insert_last, cand)
+                        -- 这种候选词的第一个可以保留，只保留一个就可以
+                        if not first_left_cand then -- 如果还没有则保留一个，保留应该直接yeild
+                            yield(cand)
+                            first_left_cand = true
+                            first_preedit = cand.preedit .. last_code
                         else
-                            -- 有匹配，按位置存储
-                            if not matched_by_position[matched_position] then
-                                matched_by_position[matched_position] = {}
+
+                            -- 遍历候选词中的每个字符, 也就是如果有多个字, 一个字一个字的匹配
+                            for pos, code in utf8.codes(cand_text) do
+                                count_char = count_char + 1
+                                local char = utf8.char(code)
+
+                                -- 这个地方忘记改了, 有可能返回1,返回2,1就是匹配成功,2是匹配到常用字上面了
+                                if fuzhuma_match(char, last_code) == 1 then
+                                    matched_position = count_char
+                                    break -- 只要有一个字符匹配就可以了
+                                    -- elseif fuzhuma_match(char, last_code) == 2 then
+                                    --     --  匹配常用字,没有辅助码的优先字
+                                    --     matched_position = count_char
+                                end
                             end
-                            table.insert(matched_by_position[matched_position], cand)
+
+                            if matched_position == 0 then
+                                -- 没有匹配
+                                table.insert(insert_last, cand)
+                            else
+                                -- 有匹配，按位置存储
+                                if not matched_by_position[matched_position] then
+                                    matched_by_position[matched_position] = {}
+                                end
+                                table.insert(matched_by_position[matched_position], cand)
+                            end
                         end
+
                     end
 
                 end
 
-            end
+                -- 按照匹配位置从前到后输出候选词
+                -- 获取所有匹配位置并排序
+                local positions = {}
+                for pos, _ in pairs(matched_by_position) do
+                    table.insert(positions, pos)
+                end
+                table.sort(positions)
+                logger.debug("匹配候选词并排序成功,现在开始输出候选词")
+                -- 按位置顺序输出（第1个字符匹配的、第2个字符匹配的、第3个字符匹配的...）
+                for _, pos in ipairs(positions) do
+                    logger.debug("输出第" .. pos .. "个字符匹配的候选词")
+                    for _, cand in ipairs(matched_by_position[pos]) do
+                        logger.debug("匹配成功的候选词" .. cand.text .. " 匹配位置: " .. tostring(pos))
+                        yield(cand)
+                    end
+                end
 
-            -- 按照匹配位置从前到后输出候选词
-            -- 获取所有匹配位置并排序
-            local positions = {}
-            for pos, _ in pairs(matched_by_position) do
-                table.insert(positions, pos)
-            end
-            table.sort(positions)
-            logger.debug("匹配候选词并排序成功,现在开始输出候选词")
-            -- 按位置顺序输出（第1个字符匹配的、第2个字符匹配的、第3个字符匹配的...）
-            for _, pos in ipairs(positions) do
-                logger.debug("输出第" .. pos .. "个字符匹配的候选词")
-                for _, cand in ipairs(matched_by_position[pos]) do
-                    logger.debug("匹配成功的候选词" .. cand.text .. " 匹配位置: " .. tostring(pos))
+                -- 把沒有匹配上的候选项添加上
+                for _, cand in ipairs(insert_last) do
                     yield(cand)
                 end
-            end
-
-            -- 把沒有匹配上的候选项添加上
-            for _, cand in ipairs(insert_last) do
-                yield(cand)
             end
 
             return true
