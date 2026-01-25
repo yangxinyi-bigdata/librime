@@ -537,7 +537,7 @@ an<Translation> RawEnglishTranslator::Query(const string& input,
     std::string query_content = text_segment.content;
 
     // 处理辅助码模式下的特殊逻辑
-    if (text_segment.type == "abc" && single_fuzhu_ && fuzhu_mode_ == "all") {
+    if (text_segment.type == "abc" && single_fuzhu_) {
       if (ContainsTrackedPunctuation(query_content)) {
         const std::string stripped = StripTrackedPunctuation(query_content);
         if (!stripped.empty() && stripped.size() % 2 == 1 &&
