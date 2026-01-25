@@ -1,12 +1,15 @@
 build/
 build-aipara/
 build-static/
+build_x64/
 weasel-overlay/
 debug/
 dist/
+dist_x64/
 data/*
 include/*
 lib/*
+lib_x64/
 bin/*
 share/*
 deps/*/*

@@ -1,5 +1,7 @@
 # Repository Guidelines
-
+## Core Rule
+- 必须使用中文回复。
+- 
 ## Project Structure & Module Organization
 - `src/`: core C++ engine sources; internal headers live under `src/rime/`.
 - `plugins/`: optional engine plugins and extensions.
@@ -45,5 +47,4 @@
 - Platform build details live in `README-mac.md` and `README-windows.md`.
 - For Linux, the quick start is `make` then `sudo make install`.
 
-## Communication Rule
-- 必须使用中文回复。
+
