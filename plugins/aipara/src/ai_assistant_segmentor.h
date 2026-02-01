@@ -27,15 +27,6 @@ class Segmentation;
 namespace rime::aipara {
 // 使用 C++17 的嵌套命名空间写法（rime::aipara），作用是避免名字冲突并分模块管理。
 
-// struct 默认成员是 public，适合做纯数据载体。
-// 这里记录了 AI 助手的行为策略开关，默认值写在等号右侧。
-struct AiAssistantSegmentorBehavior {
-  bool commit_question = false;
-  bool auto_commit_reply = false;
-  bool clipboard_mode = false;
-  std::string prompt_chat;
-};
-
 // Segmentor 是 Rime 输入法里负责“切分输入串”的基类。
 // 这里通过 public 继承（: public Segmentor）来扩展它，就像 Python 子类继承父类。
 class AiAssistantSegmentor : public Segmentor {
@@ -58,7 +49,6 @@ class AiAssistantSegmentor : public Segmentor {
   void ResetConfigCaches();
   void LoadConfig(Config* config);
   Config* ResolveConfig() const;
-  AiAssistantSegmentorBehavior ReadBehavior(Config* config) const;
   void UpdateKeepInputProperty(Context* context,
                                bool keep_input_uncommit) const;
   bool HandleClearHistoryShortcut(Segmentation* segmentation,
@@ -69,9 +59,6 @@ class AiAssistantSegmentor : public Segmentor {
   bool HandleReplyInput(Segmentation* segmentation,
                         const std::string& segmentation_input,
                         Config* config) const;
-  bool HandlePromptSegment(Segmentation* segmentation,
-                           const std::string& segmentation_input,
-                           const AiAssistantSegmentorBehavior& behavior) const;
   bool HandleSpeechTriggerAfterAiPrefix(Segmentation* segmentation,
                                         Context* context,
                                         const std::string& segmentation_input,

@@ -149,6 +149,7 @@ an<Translation> PunctEngChineseFilter::Apply(an<Translation> translation,
   std::string cloud_convert_symbol;  // 云转换符号
   std::unordered_set<std::string> ai_reply_tags;  // AI回复标签集合
   std::unordered_set<std::string> ai_chat_triggers;  // AI聊天触发器集合
+  bool replace_punct_enabled = false;
 
   // 从配置中读取相关设置
   if (config) {
@@ -170,6 +171,9 @@ an<Translation> PunctEngChineseFilter::Apply(an<Translation> translation,
         ai_reply_tags.insert(trigger_name + "_reply");
       }
     }
+
+    config->GetBool("translator/replace_punct_enabled",
+                    &replace_punct_enabled);
   }
 
   // 获取当前编辑组合和最后一个段落
@@ -303,7 +307,7 @@ an<Translation> PunctEngChineseFilter::Apply(an<Translation> translation,
             "匹配到ai_chat: " + first_type);
       }
     }
-    if (!ai_reply && !ai_chat) {
+    if (replace_punct_enabled && !ai_reply && !ai_chat) {
       const std::string& first_text = first->text();
       if (text_formatting::HasPunctuationNoRawEnglish(first_text, &logger_)) {
         punch_flag = true;
@@ -332,7 +336,8 @@ an<Translation> PunctEngChineseFilter::Apply(an<Translation> translation,
       // - ai_reply 为 true 表示命中 AI 回复豁免，保持原文。
       // - punch_flag 为 true 才代表首候选包含 ASCII 标点。
       // - count < 10 避免无意义地处理过多候选。
-      const bool convert = !ai_reply && punch_flag && count < 10;
+      const bool convert =
+          replace_punct_enabled && !ai_reply && punch_flag && count < 10;
 
       if (convert) {
         // 需要转换标点符号

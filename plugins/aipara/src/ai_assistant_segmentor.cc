@@ -1,9 +1,7 @@
 #include "ai_assistant_segmentor.h"
 
 // <algorithm> 提供 STL 算法，比如 std::equal。
-// <utility> 主要提供 std::move/std::pair 等工具。
 #include <algorithm>
-#include <utility>
 
 // 引入和 Rime 运行时交互所需的头文件，分别负责配置、上下文、引擎对象等。
 #include <rime/config.h>
@@ -36,12 +34,10 @@ bool AiAssistantSegmentor::Proceed(Segmentation* segmentation) {
 
   bool keep_input_uncommit = false;
   bool enabled = false;
-  AiAssistantSegmentorBehavior behavior;
   if (config) {
     config->GetBool("translator/keep_input_uncommit",
                     &keep_input_uncommit);
     config->GetBool("ai_assistant/enabled", &enabled);
-    behavior = ReadBehavior(config);
   }
 
   // 根据配置决定是否保留用户输入（类似自动保存草稿）。
@@ -96,11 +92,6 @@ bool AiAssistantSegmentor::Proceed(Segmentation* segmentation) {
     return false;
   }
 
-  // 检查是否输入了特定的 prompt（提示词）。
-  if (HandlePromptSegment(segmentation, segmentation_input, behavior)) {
-    return false;
-  }
-
   // 处理聊天触发器，should_stop 用来告诉调用者是否需要停止后续分段。
   bool should_stop = false;
   if (HandleChatTrigger(segmentation, context, segmentation_input, config,
@@ -119,23 +110,6 @@ Config* AiAssistantSegmentor::ResolveConfig() const {
     return schema->config();
   }
   return nullptr;
-}
-
-AiAssistantSegmentorBehavior AiAssistantSegmentor::ReadBehavior(
-    Config* config) const {
-  AiAssistantSegmentorBehavior behavior;
-  if (!config) {
-    return behavior;
-  }
-  config->GetBool("ai_assistant/behavior/commit_question",
-                  &behavior.commit_question);
-  config->GetBool("ai_assistant/behavior/auto_commit_reply",
-                  &behavior.auto_commit_reply);
-  config->GetBool("ai_assistant/behavior/clipboard_mode",
-                  &behavior.clipboard_mode);
-  config->GetString("ai_assistant/behavior/prompt_chat",
-                    &behavior.prompt_chat);
-  return behavior;
 }
 
 void AiAssistantSegmentor::UpdateKeepInputProperty(Context* context,
@@ -226,28 +200,6 @@ bool AiAssistantSegmentor::HandleReplyInput(
   }
 
   return false;
-}
-
-bool AiAssistantSegmentor::HandlePromptSegment(
-    Segmentation* segmentation,
-    const std::string& segmentation_input,
-    const AiAssistantSegmentorBehavior& behavior) const {
-  // 如果没有配置 prompt_chat 或输入不匹配，则直接返回。
-  if (behavior.prompt_chat.empty() ||
-      segmentation_input != behavior.prompt_chat) {
-    return false;
-  }
-
-  Segment prompt_segment(0, static_cast<int>(behavior.prompt_chat.size()));
-  prompt_segment.tags.insert("ai_prompt");
-  prompt_segment.tags.insert("abc");
-
-  segmentation->Reset(0);
-  if (!segmentation->AddSegment(prompt_segment)) {
-    return false;
-  }
-
-  return true;
 }
 
 bool AiAssistantSegmentor::HandleSpeechTriggerAfterAiPrefix(

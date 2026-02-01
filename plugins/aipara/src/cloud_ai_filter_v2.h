@@ -6,6 +6,8 @@
 
 #include <optional>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -17,6 +19,7 @@ namespace rime {
 class Config;
 class Candidate;
 class Context;
+class Segment;
 }  // namespace rime
 
 namespace rime::aipara {
@@ -47,7 +50,15 @@ class CloudAiFilterV2 : public Filter {
     std::vector<std::pair<std::string, std::string>> ai_candidates;
   };
 
+  struct PromptTriggerCache {
+    Config* config = nullptr;
+    bool ready = false;
+    std::unordered_map<char, std::vector<std::string>> comments_by_initial;
+    std::unordered_set<char> initials;
+  };
+
   CandidateCache cache_;
+  PromptTriggerCache prompt_cache_;
   TcpZmq* tcp_zmq_ = nullptr;
 
   Logger logger_;
@@ -57,6 +68,12 @@ class CloudAiFilterV2 : public Filter {
   void SaveCache(const std::string& input,
                  const ParsedResult& parsed);
   std::optional<ParsedResult> GetCache(const std::string& input) const;
+
+  void EnsurePromptTriggerCache(Config* config);
+  void MaybeAnnotatePromptHints(Context* context,
+                                const Segment& segment,
+                                Config* config,
+                                CandidateList* originals);
 
   ParsedResult ParseConvertResult(const rapidjson::Document& doc) const;
   std::vector<an<Candidate>> BuildCandidatesFromResult(

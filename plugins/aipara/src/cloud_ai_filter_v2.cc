@@ -16,7 +16,6 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -109,38 +108,6 @@ int RequireConfigInt(Config* config, const std::string& path) {
   return value;
 }
 
-std::unordered_map<std::string, std::string> RequirePromptValues(
-    Config* config,
-    const std::string& leaf) {
-  if (!config) {
-    throw std::runtime_error(
-        "schema config unavailable while reading ai prompts");
-  }
-  an<ConfigMap> prompts = config->GetMap("ai_assistant/ai_prompts");
-  if (!prompts) {
-    throw std::runtime_error(
-        "missing config 'ai_assistant/ai_prompts'");
-  }
-
-  std::unordered_map<std::string, std::string> values;
-  for (auto it = prompts->begin(); it != prompts->end(); ++it) {
-    const std::string& prompt_name = it->first;
-    std::string path = "ai_assistant/ai_prompts/" + prompt_name;
-    if (!leaf.empty()) {
-      path.append("/");
-      path.append(leaf);
-    }
-    std::string value;
-    if (!config->GetString(path, &value) || value.empty()) {
-      throw std::runtime_error(
-          "missing config '" + path + "' for prompt '" +
-          prompt_name + "'");
-    }
-    values.emplace(prompt_name, value);
-  }
-  return values;
-}
-
 an<FifoTranslation> MakeTranslation(
     const std::vector<an<Candidate>>& first,
     const CandidateList& originals) {
@@ -209,12 +176,14 @@ an<Translation> CloudAiFilterV2::Apply(an<Translation> translation,
     return translation;
   }
 
+  Config* config = ResolveConfig();
+  MaybeAnnotatePromptHints(context, segment, config, &originals);
+
   const an<Candidate>& first = originals.front();
   const std::string schema_name =
       engine_->schema() ? engine_->schema()->schema_id()
                         : std::string();
 
-  Config* config = ResolveConfig();
   std::string delimiter;
   if (config) {
     try {
@@ -235,81 +204,6 @@ an<Translation> CloudAiFilterV2::Apply(an<Translation> translation,
                      "speller/delimiter.");
   }
   SetCloudConvertFlag(first.get(), context, delimiter);
-
-  if (segment.HasTag("ai_prompt")) {
-
-
-    try {
-      const std::string prompt_chat = RequireConfigString(
-          config, "ai_assistant/behavior/prompt_chat");
-      const auto chat_triggers =
-          RequirePromptValues(config, "chat_triggers");
-      const auto chat_names =
-          RequirePromptValues(config, "chat_names");
-
-      std::vector<std::string> prompt_triggers;
-      if (!prompt_chat.empty()) {
-        const char prefix_char = prompt_chat.front();
-        for (const auto& [trigger_name, trigger_prefix] :
-             chat_triggers) {
-          if (trigger_prefix.empty() ||
-              trigger_prefix.front() != prefix_char) {
-            continue;
-          }
-          auto it_name = chat_names.find(trigger_name);
-          if (it_name == chat_names.end()) {
-            throw std::runtime_error(
-                "missing chat_names entry for prompt '" +
-                trigger_name + "'");
-          }
-          std::string chat_name =
-              StripTrailingColon(it_name->second);
-          if (chat_name.empty()) {
-            continue;
-          }
-          prompt_triggers.push_back(trigger_prefix + chat_name);
-        }
-        std::sort(prompt_triggers.begin(), prompt_triggers.end());
-      }
-
-      const std::size_t max_rounds = prompt_triggers.size() / 2;
-      std::size_t current_round = 0;
-      std::vector<an<Candidate>> rewritten;
-      rewritten.reserve(originals.size());
-
-      for (std::size_t index = 0; index < originals.size();
-           ++index) {
-        const an<Candidate>& cand = originals[index];
-        std::string comment;
-        if (current_round < max_rounds) {
-          const std::size_t base = current_round * 2;
-          comment.assign(" ");
-          comment.append(prompt_triggers[base]);
-          if (base + 1 < prompt_triggers.size()) {
-            comment.append("  ");
-            comment.append(prompt_triggers[base + 1]);
-          }
-          ++current_round;
-        }
-
-        if (!comment.empty()) {
-          auto shadow = New<ShadowCandidate>(
-              cand, cand->type(), std::string(), comment);
-          rewritten.push_back(shadow);
-        } else {
-          rewritten.push_back(cand);
-        }
-      }
-
-      return MakeTranslationFromOriginals(rewritten);
-    } catch (const std::exception& e) {
-      AIPARA_LOG_ERROR(
-          logger_,
-          "Failed to construct ai_prompt candidates: " +
-              std::string(e.what()));
-      return MakeTranslationFromOriginals(originals);
-    }
-  }
 
   const std::string cand_type = first->type();
   if (cand_type == "punct" || EndsWith(cand_type, "ai_chat")) {
@@ -490,6 +384,10 @@ void CloudAiFilterV2::UpdateCurrentConfig(Config* config) {
         "configuration lazily.");
   }
   ClearCache();
+  prompt_cache_.ready = false;
+  prompt_cache_.config = nullptr;
+  prompt_cache_.comments_by_initial.clear();
+  prompt_cache_.initials.clear();
 }
 
 void CloudAiFilterV2::AttachTcpZmq(TcpZmq* client) {
@@ -544,6 +442,138 @@ std::optional<CloudAiFilterV2::ParsedResult> CloudAiFilterV2::GetCache(
   parsed.cloud_candidates = cache_.cloud_candidates;
   parsed.ai_candidates = cache_.ai_candidates;
   return parsed;
+}
+
+void CloudAiFilterV2::EnsurePromptTriggerCache(Config* config) {
+  if (!config) {
+    prompt_cache_.ready = false;
+    prompt_cache_.config = nullptr;
+    prompt_cache_.comments_by_initial.clear();
+    prompt_cache_.initials.clear();
+    return;
+  }
+  if (prompt_cache_.ready && prompt_cache_.config == config) {
+    return;
+  }
+
+  prompt_cache_.config = config;
+  prompt_cache_.ready = false;
+  prompt_cache_.comments_by_initial.clear();
+  prompt_cache_.initials.clear();
+
+  an<ConfigMap> prompts = config->GetMap("ai_assistant/ai_prompts");
+  if (!prompts) {
+    prompt_cache_.ready = true;
+    return;
+  }
+
+  for (auto it = prompts->begin(); it != prompts->end(); ++it) {
+    const std::string& prompt_name = it->first;
+    std::string trigger;
+    if (!config->GetString("ai_assistant/ai_prompts/" + prompt_name +
+                               "/chat_triggers",
+                           &trigger) ||
+        trigger.empty()) {
+      continue;
+    }
+    std::string trigger_name;
+    if (!config->GetString("ai_assistant/ai_prompts/" + prompt_name +
+                               "/chat_triggers_name",
+                           &trigger_name)) {
+      continue;
+    }
+    trigger_name = StripTrailingColon(trigger_name);
+    if (trigger_name.empty()) {
+      continue;
+    }
+
+    const char initial = trigger.front();
+    std::string comment = trigger + trigger_name;
+    prompt_cache_.comments_by_initial[initial].push_back(std::move(comment));
+    prompt_cache_.initials.insert(initial);
+  }
+
+  for (auto& entry : prompt_cache_.comments_by_initial) {
+    auto& comments = entry.second;
+    std::sort(comments.begin(), comments.end());
+    comments.erase(std::unique(comments.begin(), comments.end()),
+                   comments.end());
+  }
+
+  prompt_cache_.ready = true;
+}
+
+void CloudAiFilterV2::MaybeAnnotatePromptHints(
+    Context* context,
+    const Segment& segment,
+    Config* config,
+    CandidateList* originals) {
+  if (!context || !config || !originals || originals->empty()) {
+    return;
+  }
+
+  const std::string& input = context->input();
+  const std::size_t seg_start = static_cast<std::size_t>(segment.start);
+  const std::size_t seg_end = static_cast<std::size_t>(segment.end);
+  if (seg_start != 0 || seg_end <= seg_start || seg_end > input.size()) {
+    return;
+  }
+  const std::string segment_input = input.substr(seg_start, seg_end - seg_start);
+  if (segment_input.size() != 1) {
+    return;
+  }
+
+  EnsurePromptTriggerCache(config);
+  if (!prompt_cache_.ready || prompt_cache_.initials.empty()) {
+    return;
+  }
+
+  const char initial = segment_input.front();
+  if (prompt_cache_.initials.count(initial) == 0) {
+    return;
+  }
+
+  auto it = prompt_cache_.comments_by_initial.find(initial);
+  if (it == prompt_cache_.comments_by_initial.end() ||
+      it->second.empty()) {
+    return;
+  }
+
+  const auto& comments = it->second;
+  const std::size_t max_rounds = (comments.size() + 1) / 2;
+  std::size_t current_round = 0;
+  CandidateList rewritten;
+  rewritten.reserve(originals->size());
+
+  for (std::size_t index = 0; index < originals->size(); ++index) {
+    const an<Candidate>& cand = (*originals)[index];
+    std::string comment;
+    if (current_round < max_rounds) {
+      const std::size_t base = current_round * 2;
+      comment.assign(" ");
+      comment.append(comments[base]);
+      if (base + 1 < comments.size()) {
+        comment.append("  ");
+        comment.append(comments[base + 1]);
+      }
+      ++current_round;
+    }
+
+    if (!comment.empty()) {
+      std::string new_comment = cand->comment();
+      new_comment.append(comment);
+      auto shadow =
+          New<ShadowCandidate>(cand, cand->type(), std::string(),
+                               new_comment);
+      rewritten.push_back(shadow);
+    } else {
+      rewritten.push_back(cand);
+    }
+  }
+
+  if (current_round > 0) {
+    originals->swap(rewritten);
+  }
 }
 
 CloudAiFilterV2::ParsedResult CloudAiFilterV2::ParseConvertResult(
