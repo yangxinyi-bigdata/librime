@@ -558,6 +558,7 @@ an<Translation> AuxCodeFilterV3::HandleBeforeMode(
   CandidateList insert_last;
   CandidateList insert_second;
   bool first_left_cand = false;
+  std::optional<std::string> first_preedit;
 
   if (input_size == 3) {
     while (!translation->exhausted()) {
@@ -606,11 +607,20 @@ an<Translation> AuxCodeFilterV3::HandleBeforeMode(
         static_cast<long>(current_end) - static_cast<long>(cand_end);
 
     if (left_position == 0) {
+      if (!first_preedit.has_value()) {
+        first_preedit = RemoveLastToken(cand->preedit());
+      }
       continue;
     }
 
     if (!first_left_cand) {
-      direct_output.push_back(cand);
+      if (!first_preedit.has_value()) {
+        first_preedit = cand->preedit();
+      }
+      std::string new_preedit = *first_preedit + " " + last_code;
+      auto rewritten = New<AuxRewrittenCandidate>(
+          cand, std::nullopt, new_preedit, cand->end() + 1);
+      direct_output.push_back(rewritten);
       first_left_cand = true;
       continue;
     }

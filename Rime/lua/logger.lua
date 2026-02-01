@@ -63,7 +63,7 @@ local function get_default_log_dir()
     end
 
     local home_dir = os.getenv("HOME") or "."
-    return home_dir .. "/Library/Aipara/log/"
+    return home_dir .. "/Library/Rime/log/"
 end
 
 -- 默认配置

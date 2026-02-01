@@ -76,7 +76,7 @@ fs::path GetDefaultUserConfigDir() {
 #else
   const char* home = std::getenv("HOME");
   fs::path base = (home && *home) ? fs::path(home) : fs::path(".");
-  return base / "Library" / "Aipara";
+  return base / "Library" / "Rime";
 #endif
 }
 

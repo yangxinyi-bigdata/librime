@@ -51,7 +51,7 @@ std::filesystem::path Logger::GetDefaultLogDir() {
   const char* home = std::getenv("HOME");
   std::filesystem::path base = (home && *home) ? std::filesystem::path(home)
                                                : std::filesystem::path(".");
-  return base / "Library" / "Aipara" / "log";
+  return base / "Library" / "Rime" / "log";
 #endif
 }
 

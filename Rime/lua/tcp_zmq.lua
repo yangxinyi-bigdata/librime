@@ -58,8 +58,8 @@ local function setup_lua_paths()
 
 --   -- 项目自身 Lua 脚本
 --   package.path  = append_paths(package.path, {
---     "/Users/yangxinyi/Library/Aipara/lua/?.lua",
---     "/Users/yangxinyi/Library/Aipara/lua/?/init.lua",
+--     "/Users/yangxinyi/Library/Rime/lua/?.lua",
+--     "/Users/yangxinyi/Library/Rime/lua/?/init.lua",
 --   })
 end
 

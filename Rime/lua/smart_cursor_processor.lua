@@ -35,7 +35,7 @@ local function get_default_user_config_dir()
     end
 
     local home_dir = os.getenv("HOME") or "."
-    return home_dir .. "/Library/Aipara/"
+    return home_dir .. "/Library/Rime/"
 end
 
 local tcp_zmq = nil

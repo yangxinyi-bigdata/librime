@@ -613,15 +613,15 @@ function aux_code_filter.func(translation, env)
                         -- 这种候选词是长度超标的，直接放弃
                         -- 这些就是最后一个字母参与到组词的数据, 在这里应该有原生的preedit,我直接获取到就可以了
                         -- 直接获取到preedit, 然后将preedit中的最后一个音节替换为last_code, 然后将替换后的内容作为新的preedit
-                        -- if not first_preedit then
-                        --     first_preedit = cand.preedit or ""
-                        --     -- logger.debug("first_preedit: " .. first_preedit)
-                        --     -- 去掉收尾空格并删除最后一个音节（以空格分隔）
-                        --     local trimmed = first_preedit:gsub("%s+$", "")
-                        --     local without_last = trimmed:match("^(.*)%s+[^%s]+$")
-                        --     first_preedit = without_last or ""
-                        --     logger.debug("first_preedit去除最后一个音节: " .. first_preedit)
-                        -- end
+                        if not first_preedit then
+                            first_preedit = cand.preedit or ""
+                            -- logger.debug("first_preedit: " .. first_preedit)
+                            -- 去掉收尾空格并删除最后一个音节（以空格分隔）
+                            local trimmed = first_preedit:gsub("%s+$", "")
+                            local without_last = trimmed:match("^(.*)%s+[^%s]+$")
+                            first_preedit = without_last or ""
+                            logger.debug("first_preedit去除最后一个音节: " .. first_preedit)
+                        end
                     else
                         -- 剩余的长度不足以覆盖全部输入的候选项, 从匹配到字符的顺序进行依次排列
                         local cand_text = cand.text
@@ -630,9 +630,16 @@ function aux_code_filter.func(translation, env)
                         local match_flag = false
                         -- 这种候选词的第一个可以保留，只保留一个就可以
                         if not first_left_cand then -- 如果还没有则保留一个，保留应该直接yeild
-                            yield(cand)
+                            
+                            if not first_preedit then
+                                -- 如果没有生成这个first_preedit,就用当前候选词的preedit
+                                first_preedit = cand.preedit
+                            end
+                            -- first_preedit = first_preedit .. last_code
                             first_left_cand = true
-                            first_preedit = cand.preedit .. last_code
+                            cand.preedit = first_preedit .. " " .. last_code
+                            cand._end = cand._end + 1
+                            yield(cand)
                         else
 
                             -- 遍历候选词中的每个字符, 也就是如果有多个字, 一个字一个字的匹配
