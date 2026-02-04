@@ -39,19 +39,19 @@ std::filesystem::path Logger::GetDefaultLogDir() {
 #ifdef _WIN32
   const char* appdata = std::getenv("APPDATA");
   if (appdata && *appdata) {
-    return std::filesystem::path(appdata) / "Rime" / "log";
+    return std::filesystem::path(appdata) / "Aipara" / "log";
   }
   const char* userprofile = std::getenv("USERPROFILE");
   if (userprofile && *userprofile) {
     return std::filesystem::path(userprofile) / "AppData" / "Roaming" /
-           "Rime" / "log";
+           "Aipara" / "log";
   }
-  return std::filesystem::path("Rime") / "log";
+  return std::filesystem::path("Aipara") / "log";
 #else
   const char* home = std::getenv("HOME");
   std::filesystem::path base = (home && *home) ? std::filesystem::path(home)
                                                : std::filesystem::path(".");
-  return base / "Library" / "Rime" / "log";
+  return base / "Library" / "Aipara" / "log";
 #endif
 }
 

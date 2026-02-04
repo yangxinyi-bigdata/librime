@@ -66,17 +66,17 @@ fs::path GetDefaultUserConfigDir() {
 #ifdef _WIN32
   const char* appdata = std::getenv("APPDATA");
   if (appdata && *appdata) {
-    return fs::path(appdata) / "Rime";
+    return fs::path(appdata) / "Aipara";
   }
   const char* userprofile = std::getenv("USERPROFILE");
   if (userprofile && *userprofile) {
-    return fs::path(userprofile) / "AppData" / "Roaming" / "Rime";
+    return fs::path(userprofile) / "AppData" / "Roaming" / "Aipara";
   }
-  return fs::path("Rime");
+  return fs::path("Aipara");
 #else
   const char* home = std::getenv("HOME");
   fs::path base = (home && *home) ? fs::path(home) : fs::path(".");
-  return base / "Library" / "Rime";
+  return base / "Library" / "Aipara";
 #endif
 }
 
