@@ -16,3 +16,12 @@
 [submodule "opencc"]
 	path = deps/opencc
 	url = https://github.com/BYVoid/OpenCC.git
+[submodule "plugins/librime-lua"]
+	path = plugins/librime-lua
+	url = https://github.com/hchunhui/librime-lua.git
+[submodule "plugins/librime-octagram"]
+	path = plugins/librime-octagram
+	url = https://github.com/lotem/librime-octagram.git
+[submodule "plugins/librime-predict"]
+	path = plugins/librime-predict
+	url = https://github.com/rime/librime-predict.git
