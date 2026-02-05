@@ -51,6 +51,15 @@ bool ContainsAny(const std::string& text, std::string_view chars) {
   return text.find_first_of(chars) != std::string::npos;
 }
 
+bool ContainsWhitespace(const std::string& text) {
+  for (unsigned char ch : text) {
+    if (std::isspace(ch) != 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::string RemoveCharacters(const std::string& text, std::string_view chars) {
   std::string result;
   result.reserve(text.size());
@@ -608,7 +617,15 @@ an<Translation> AuxCodeFilterV3::HandleBeforeMode(
 
     if (left_position == 0) {
       if (!first_preedit.has_value()) {
-        first_preedit = RemoveLastToken(cand->preedit());
+        std::string preedit = cand->preedit();
+        if (ContainsWhitespace(preedit)) {
+          std::string trimmed = RemoveLastToken(preedit);
+          if (!trimmed.empty()) {
+            first_preedit = trimmed;
+          }
+        } else {
+          direct_output.push_back(cand);
+        }
       }
       continue;
     }

@@ -96,6 +96,8 @@ make deps/opencc
 ### 构建 librime
 
 ``` sh
+make release
+
 make
 ```
 这会生成 `build/lib/Release/librime*.dylib` 和命令行工具 `build/bin/Release/rime_*`。
@@ -131,3 +133,26 @@ make test-debug
 
 ``` sh
 (cd debug/bin; ./rime_api_console)
+
+
+只构建插件：
+```
+cmake --build build --target rime-aipara
+
+# 这个是将rime构建出来的文件全部复制到squirrel构建目录当中
+rm -rf /Users/yangxinyi/opt/100_code/100_rime_gui/squirrel-workspace/gpt5-scroll/lib/*
+
+cp -a /Users/yangxinyi/opt/100_code/100_rime_gui/squirrel-workspace/gpt5-scroll/librime/build/lib/. /Users/yangxinyi/opt/100_code/100_rime_gui/squirrel-workspace/gpt5-scroll/lib/
+
+sudo cp /Users/yangxinyi/opt/100_code/librime_branch/librime/build/lib/rime-plugins/librime-aipara.dylib /Library/Input\ Methods/Aipara.app/Contents/Frameworks/rime-plugins/
+
+sudo codesign --force --sign - "/Library/Input Methods/Aipara.app"
+```
+
+
+重启 Squirrel，再验证 log_cpp 目录。
+```
+sudo killall Squirrel
+open -a /Library/Input\ Methods/Aipara.app
+/Library/Input\ Methods/Aipara.app/Contents/MacOS/Squirrel --reload
+```
