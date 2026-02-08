@@ -249,6 +249,7 @@ class TcpZmq {
   static std::vector<std::string> SplitPayload(const std::string& payload);
   static bool IsTemporaryError(int error_code);
   bool ConfigureCurveForSocket(SocketState& state);
+  bool ProbeCurveKeysIfNeeded(const char* channel_name);
   bool EnsureCurveKeysLoaded();
   bool LoadCurveKeys();
   void MarkSocketHandshakeSuccess(SocketState& state,
@@ -285,6 +286,8 @@ class TcpZmq {
     std::string client_secret_key;
     bool keys_loaded = false;
     std::string last_error;
+    std::int64_t next_probe_at = 0;
+    bool waiting_log_emitted = false;
     std::uint64_t version = 0;
   };
 

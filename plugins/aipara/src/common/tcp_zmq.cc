@@ -111,9 +111,115 @@ bool IsValidCurveKey(const std::string& key) {
   return key.size() == 40;
 }
 
+struct CurveKeyMaterial {
+  std::string client_public_key;
+  std::string client_secret_key;
+  std::string server_public_key;
+};
+
+bool LoadCurveKeyMaterialFromDir(const fs::path& cert_dir_path,
+                                 CurveKeyMaterial* material,
+                                 std::string* error) {
+  auto set_error = [&](const std::string& message) {
+    if (error) {
+      *error = message;
+    }
+  };
+  if (!material) {
+    set_error("curve_material_target_null");
+    return false;
+  }
+
+  std::error_code ec;
+  if (!fs::exists(cert_dir_path, ec)) {
+    set_error("证书目录不存在: " + cert_dir_path.string());
+    return false;
+  }
+  if (!fs::is_directory(cert_dir_path, ec)) {
+    set_error("证书路径不是目录: " + cert_dir_path.string());
+    return false;
+  }
+
+  auto read_file = [&](const fs::path& path,
+                       std::string* output) -> bool {
+    std::ifstream stream(path, std::ios::in);
+    if (!stream) {
+      set_error("无法读取密钥文件: " + path.string());
+      return false;
+    }
+    std::ostringstream buffer;
+    buffer << stream.rdbuf();
+    *output = buffer.str();
+    return true;
+  };
+
+  std::string client_public_content;
+  std::string client_secret_content;
+  std::string server_public_content;
+  if (!read_file(cert_dir_path / "client.key",
+                 &client_public_content)) {
+    return false;
+  }
+  if (!read_file(cert_dir_path / "client_secret.key",
+                 &client_secret_content)) {
+    return false;
+  }
+  if (!read_file(cert_dir_path / "server_public.key",
+                 &server_public_content)) {
+    return false;
+  }
+
+  auto client_public_key =
+      ExtractCurveField(client_public_content, "public-key");
+  auto client_secret_key =
+      ExtractCurveField(client_secret_content, "secret-key");
+  auto client_secret_public =
+      ExtractCurveField(client_secret_content, "public-key");
+  auto server_public_key =
+      ExtractCurveField(server_public_content, "public-key");
+
+  if (!client_secret_key) {
+    set_error("client_secret.key 缺少 secret-key 字段");
+    return false;
+  }
+  if (!client_public_key && !client_secret_public) {
+    set_error("无法提取客户端公钥");
+    return false;
+  }
+  if (!server_public_key) {
+    set_error("server_public.key 缺少 public-key 字段");
+    return false;
+  }
+
+  const std::string client_public =
+      client_secret_public ? *client_secret_public
+                           : *client_public_key;
+  if (!IsValidCurveKey(client_public)) {
+    set_error("客户端公钥长度非法");
+    return false;
+  }
+  if (!IsValidCurveKey(*client_secret_key)) {
+    set_error("客户端私钥长度非法");
+    return false;
+  }
+  if (!IsValidCurveKey(*server_public_key)) {
+    set_error("服务端公钥长度非法");
+    return false;
+  }
+
+  material->client_public_key = client_public;
+  material->client_secret_key = *client_secret_key;
+  material->server_public_key = *server_public_key;
+  if (error) {
+    error->clear();
+  }
+  return true;
+}
+
 constexpr int kDefaultRimePort = 10089;
 constexpr int kDefaultAiPort = 10090;
 constexpr int kMaxProcessMessages = 5;
+constexpr std::int64_t kCurveKeyProbeIntervalMs = 1000;
 
 Logger MakeTcpZmqLogger() {
   Logger::Options options;
@@ -330,28 +436,10 @@ bool TcpZmq::Init() {
   }
 
   logger_.Clear();
-
-  const bool rime_connected = ConnectToRimeServer();
-  const bool ai_connected = ConnectToAiServer();
-
-  if (rime_connected || ai_connected) {
-    is_initialized_ = true;
-    AIPARA_LOG_INFO(logger_, "双端口TCP套接字系统初始化成功");
-    if (rime_connected) {
-      AIPARA_LOG_INFO(logger_, "Rime状态服务连接成功");
-    }
-    if (ai_connected) {
-      AIPARA_LOG_INFO(logger_, "AI转换服务连接成功");
-    }
-    AIPARA_LOG_INFO(logger_, "双端口TCP套接字系统初始化完成");
-    return true;
-  }
-
+  is_initialized_ = true;
   AIPARA_LOG_INFO(
       logger_,
-      "双端口TCP套接字系统初始化失败，但系统仍可工作（离线模式）");
-  is_initialized_ = true;
-  AIPARA_LOG_INFO(logger_, "双端口TCP套接字系统初始化完成");
+      "双端口TCP套接字系统初始化完成（按需建立连接）");
   return true;
 }
 
@@ -573,6 +661,16 @@ void TcpZmq::RefreshCurveConfig(rime::Config* config) {
   }
 
   if (!changed) {
+    // 支持首次无密钥启动：当配置未变但密钥后续生成成功时，自动触发重连。
+    if (curve_settings_.enabled && !curve_settings_.keys_loaded) {
+      if (ProbeCurveKeysIfNeeded("CurveZMQ")) {
+        AIPARA_LOG_INFO(logger_,
+                        "检测到 CurveZMQ 密钥已就绪，准备重新建立加密连接");
+        if (is_initialized_) {
+          ForceReconnect();
+        }
+      }
+    }
     return;
   }
 
@@ -581,6 +679,8 @@ void TcpZmq::RefreshCurveConfig(rime::Config* config) {
   curve_settings_.cert_dir = cert_dir;
   curve_settings_.keys_loaded = false;
   curve_settings_.last_error.clear();
+  curve_settings_.next_probe_at = 0;
+  curve_settings_.waiting_log_emitted = false;
   ++curve_settings_.version;
 
   rime_state_.curve_version_applied = 0;
@@ -591,6 +691,8 @@ void TcpZmq::RefreshCurveConfig(rime::Config* config) {
     curve_settings_.client_public_key.clear();
     curve_settings_.client_secret_key.clear();
     curve_settings_.keys_loaded = true;
+    curve_settings_.next_probe_at = 0;
+    curve_settings_.waiting_log_emitted = false;
     AIPARA_LOG_INFO(logger_, "CurveZMQ 加密已禁用");
   } else {
     AIPARA_LOG_INFO(
@@ -625,6 +727,90 @@ bool TcpZmq::EnsureCurveKeysLoaded() {
   return LoadCurveKeys();
 }
 
+bool TcpZmq::ProbeCurveKeysIfNeeded(const char* channel_name) {
+  if (!curve_settings_.configured || !curve_settings_.enabled) {
+    return true;
+  }
+
+  const std::int64_t now = NowMs();
+  if (curve_settings_.next_probe_at > 0 &&
+      now < curve_settings_.next_probe_at) {
+    return curve_settings_.keys_loaded;
+  }
+
+  curve_settings_.next_probe_at = now + kCurveKeyProbeIntervalMs;
+  if (curve_settings_.cert_dir.empty()) {
+    curve_settings_.last_error = "curve_cert_dir 未配置或为空";
+    return false;
+  }
+
+  CurveKeyMaterial material;
+  std::string parse_error;
+  if (LoadCurveKeyMaterialFromDir(fs::path(curve_settings_.cert_dir),
+                                  &material, &parse_error)) {
+    const bool was_loaded = curve_settings_.keys_loaded;
+    const bool rotated =
+        was_loaded &&
+        (curve_settings_.client_public_key != material.client_public_key ||
+         curve_settings_.client_secret_key != material.client_secret_key ||
+         curve_settings_.server_public_key != material.server_public_key);
+
+    curve_settings_.client_public_key = material.client_public_key;
+    curve_settings_.client_secret_key = material.client_secret_key;
+    curve_settings_.server_public_key = material.server_public_key;
+    curve_settings_.keys_loaded = true;
+    curve_settings_.last_error.clear();
+    curve_settings_.next_probe_at = 0;
+    curve_settings_.waiting_log_emitted = false;
+
+    if (!was_loaded) {
+      ++curve_settings_.version;
+      rime_state_.curve_version_applied = 0;
+      ai_convert_.curve_version_applied = 0;
+      if (channel_name && *channel_name) {
+        AIPARA_LOG_INFO(
+            logger_,
+            std::string(channel_name) + " 检测到 CurveZMQ 密钥已就绪");
+      }
+      return true;
+    }
+
+    if (rotated) {
+      ++curve_settings_.version;
+      rime_state_.curve_version_applied = 0;
+      ai_convert_.curve_version_applied = 0;
+      AIPARA_LOG_INFO(
+          logger_,
+          "检测到 CurveZMQ 密钥已更新，重置连接并应用新密钥");
+      ResetSocketState(rime_state_);
+      ResetSocketState(ai_convert_);
+      rime_state_.last_connect_attempt = 0;
+      ai_convert_.last_connect_attempt = 0;
+    }
+    return true;
+  }
+
+  curve_settings_.last_error =
+      parse_error.empty() ? std::string("curve_keys_not_ready")
+                          : parse_error;
+
+  if (!curve_settings_.waiting_log_emitted) {
+    if (channel_name && *channel_name) {
+      AIPARA_LOG_WARN(
+          logger_,
+          std::string(channel_name) + " 等待 CurveZMQ 密钥就绪: " +
+              curve_settings_.last_error);
+    } else {
+      AIPARA_LOG_WARN(logger_,
+                      "等待 CurveZMQ 密钥就绪: " +
+                          curve_settings_.last_error);
+    }
+    curve_settings_.waiting_log_emitted = true;
+  }
+
+  return curve_settings_.keys_loaded;
+}
+
 bool TcpZmq::LoadCurveKeys() {
   curve_settings_.keys_loaded = false;
 
@@ -640,100 +826,24 @@ bool TcpZmq::LoadCurveKeys() {
     return false;
   }
 
-  std::error_code ec;
   fs::path cert_dir_path(curve_settings_.cert_dir);
-  if (!fs::exists(cert_dir_path, ec)) {
-    curve_settings_.last_error =
-        "证书目录不存在: " + cert_dir_path.string();
-    return false;
-  }
-  if (!fs::is_directory(cert_dir_path, ec)) {
-    curve_settings_.last_error =
-        "证书路径不是目录: " + cert_dir_path.string();
-    return false;
-  }
-
-  auto read_file = [&](const fs::path& path,
-                       std::string* output) -> bool {
-    std::ifstream stream(path, std::ios::in);
-    if (!stream) {
-      curve_settings_.last_error =
-          "无法读取密钥文件: " + path.string();
-      return false;
-    }
-    std::ostringstream buffer;
-    buffer << stream.rdbuf();
-    *output = buffer.str();
-    return true;
-  };
-
-  std::string client_public_content;
-  std::string client_secret_content;
-  std::string server_public_content;
-
-  if (!read_file(cert_dir_path / "client.key",
-                 &client_public_content)) {
-    return false;
-  }
-  if (!read_file(cert_dir_path / "client_secret.key",
-                 &client_secret_content)) {
-    return false;
-  }
-  if (!read_file(cert_dir_path / "server_public.key",
-                 &server_public_content)) {
+  CurveKeyMaterial material;
+  std::string parse_error;
+  if (!LoadCurveKeyMaterialFromDir(cert_dir_path, &material,
+                                   &parse_error)) {
+    curve_settings_.last_error = parse_error.empty()
+                                     ? std::string("curve_key_parse_failed")
+                                     : parse_error;
     return false;
   }
 
-  auto client_public_key =
-      ExtractCurveField(client_public_content, "public-key");
-  auto client_secret_key =
-      ExtractCurveField(client_secret_content, "secret-key");
-  auto client_secret_public =
-      ExtractCurveField(client_secret_content, "public-key");
-  auto server_public_key =
-      ExtractCurveField(server_public_content, "public-key");
-
-  if (!client_secret_key) {
-    curve_settings_.last_error =
-        "client_secret.key 缺少 secret-key 字段";
-    return false;
-  }
-  if (!client_public_key && !client_secret_public) {
-    curve_settings_.last_error =
-        "无法提取客户端公钥";
-    return false;
-  }
-  if (!server_public_key) {
-    curve_settings_.last_error =
-        "server_public.key 缺少 public-key 字段";
-    return false;
-  }
-
-  const std::string client_public =
-      client_secret_public ? *client_secret_public
-                           : *client_public_key;
-
-  if (!IsValidCurveKey(client_public)) {
-    curve_settings_.last_error =
-        "客户端公钥长度非法";
-    return false;
-  }
-  if (!IsValidCurveKey(*client_secret_key)) {
-    curve_settings_.last_error =
-        "客户端私钥长度非法";
-    return false;
-  }
-  if (!IsValidCurveKey(*server_public_key)) {
-    curve_settings_.last_error =
-        "服务端公钥长度非法";
-    return false;
-  }
-
-  curve_settings_.client_public_key = client_public;
-  curve_settings_.client_secret_key = *client_secret_key;
-  curve_settings_.server_public_key = *server_public_key;
+  curve_settings_.client_public_key = material.client_public_key;
+  curve_settings_.client_secret_key = material.client_secret_key;
+  curve_settings_.server_public_key = material.server_public_key;
   curve_settings_.keys_loaded = true;
   curve_settings_.last_error.clear();
+  curve_settings_.next_probe_at = 0;
+  curve_settings_.waiting_log_emitted = false;
 
   return true;
 }
@@ -906,6 +1016,15 @@ bool TcpZmq::ConnectToRimeServer() {
     }
   }
 
+  if (curve_settings_.configured && curve_settings_.enabled) {
+    if (!ProbeCurveKeysIfNeeded("Rime状态ZeroMQ")) {
+      state.last_error = curve_settings_.last_error.empty()
+                             ? "curve_keys_not_ready"
+                             : curve_settings_.last_error;
+      return false;
+    }
+  }
+
   if (!EnsureContext()) {
     state.connection_failures++;
     state.last_error = "context_creation_failed";
@@ -995,6 +1114,15 @@ bool TcpZmq::ConnectToAiServer() {
       } else {
         return true;
       }
+    }
+  }
+
+  if (curve_settings_.configured && curve_settings_.enabled) {
+    if (!ProbeCurveKeysIfNeeded("AI转换ZeroMQ")) {
+      state.last_error = curve_settings_.last_error.empty()
+                             ? "curve_keys_not_ready"
+                             : curve_settings_.last_error;
+      return false;
     }
   }
 
