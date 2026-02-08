@@ -140,11 +140,12 @@ make test-debug
 cmake --build build --target rime-aipara
 
 # 这个是将rime构建出来的文件全部复制到squirrel构建目录当中
+```
 rm -rf /Users/yangxinyi/opt/100_code/100_rime_gui/squirrel-workspace/gpt5-scroll/lib/*
 
 cp -a /Users/yangxinyi/opt/100_code/100_rime_gui/squirrel-workspace/gpt5-scroll/librime/build/lib/. /Users/yangxinyi/opt/100_code/100_rime_gui/squirrel-workspace/gpt5-scroll/lib/
 
-sudo cp /Users/yangxinyi/opt/100_code/librime_branch/librime/build/lib/rime-plugins/librime-aipara.dylib /Library/Input\ Methods/Aipara.app/Contents/Frameworks/rime-plugins/
+sudo cp -a  /Users/yangxinyi/opt/100_code/100_rime_gui/squirrel-workspace/gpt5-scroll/librime/build/lib/rime-plugins/. /Library/Input\ Methods/Aipara.app/Contents/Frameworks/rime-plugins/
 
 sudo codesign --force --sign - "/Library/Input Methods/Aipara.app"
 ```
