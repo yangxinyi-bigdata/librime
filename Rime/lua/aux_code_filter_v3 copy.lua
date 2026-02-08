@@ -429,22 +429,14 @@ function aux_code_filter.func(translation, env)
                 if left_position == 0 then
                     -- 这些就是最后一个字母参与到组词的数据, 在这里应该有原生的preedit,我直接获取到就可以了
                     -- 直接获取到preedit, 然后将preedit中的最后一个音节替换为last_code, 然后将替换后的内容作为新的preedit
-                    local cand_preedit = cand.preedit or ""
-                    if cand_preedit:find("%s") then
-                        if not first_preedit then
-                            first_preedit = cand_preedit
-                            -- logger.debug("first_preedit: " .. first_preedit)
-                            -- 去掉收尾空格并删除最后一个音节（以空格分隔）
-                            local trimmed = first_preedit:gsub("%s+$", "")
-                            local without_last = trimmed:match("^(.*)%s+[^%s]+$")
-                            first_preedit = without_last or ""
-                            logger.debug("first_preedit去除最后一个音节: " .. first_preedit)
-                        end
-                    else
-                        if not first_preedit then
-                            first_preedit = cand_preedit
-                            logger.debug("first_preedit无空格，保留原值: " .. first_preedit)
-                        end
+                    if not first_preedit then
+                        first_preedit = cand.preedit or ""
+                        -- logger.debug("first_preedit: " .. first_preedit)
+                        -- 去掉收尾空格并删除最后一个音节（以空格分隔）
+                        local trimmed = first_preedit:gsub("%s+$", "")
+                        local without_last = trimmed:match("^(.*)%s+[^%s]+$")
+                        first_preedit = without_last or ""
+                        logger.debug("first_preedit去除最后一个音节: " .. first_preedit)
                     end
 
                 elseif left_position == 1 then
@@ -615,23 +607,25 @@ function aux_code_filter.func(translation, env)
 
             else -- 不仅仅是三个字母的时候，走这个分支。
                 for cand in translation:iter() do
-                    -- logger.debug("cand.text: " .. cand.text .. " cand.preedit: " .. cand.preedit .. " cand.type: " .. cand.type .. " cand.start: " .. cand.start .. " cand._end: " .. cand._end)
+                    logger.debug("cand.text: " .. cand.text .. " cand.preedit: " .. cand.preedit .. " cand.type: " .. cand.type .. " cand.start: " .. cand.start .. " cand._end: " .. cand._end)
                     count = count + 1
                     local left_position = current_end - cand._end
                     if left_position == 0 then
-                        
                         -- 这种候选词是长度超标的，直接放弃
                         -- 这些就是最后一个字母参与到组词的数据, 在这里应该有原生的preedit,我直接获取到就可以了
                         -- 直接获取到preedit, 然后将preedit中的最后一个音节替换为last_code, 然后将替换后的内容作为新的preedit
                         if not first_preedit then
                             local cand_preedit = cand.preedit or ""
+                            -- 如果preedit当中有空格存在, 说明是汉语候选词,如果没有说明是英文候选词
                             if cand_preedit:find("%s") then
+                                -- 去除掉最后的空格
                                 local trimmed = cand_preedit:gsub("%s+$", "")
+                                -- 去除掉最后一组空格和拼音
                                 local without_last = trimmed:match("^(.*)%s+[^%s]+$")
                                 first_preedit = without_last
                             else
                                 -- 候选词的preedit当中没有空格，说明有问题，应该是英文的候选词，所以对于候选词应该直接输出
-                                -- 对于preedit也应该直接保留
+                                -- 直接用当前的preedit就可以
                                 yield(cand)
                             end
                         end
@@ -784,3 +778,4 @@ function aux_code_filter.fini(env)
 end
 
 return aux_code_filter
+
