@@ -141,7 +141,7 @@ function aux_code_filter.readAuxTxt(txtpath)
     end
 
     -- local defaultFile = '20250612_phrases_shuangpin_org.txt'
-    local userPath = rime_api.get_user_data_dir() .. "/lua/aux_code/"
+    local userPath = rime_api.get_user_data_dir() .. "/aux_code/"
     local fileAbsolutePath = userPath .. txtpath .. ".txt"
     logger.debug("aux_code_filter读取文件: " .. fileAbsolutePath)
 
@@ -607,6 +607,7 @@ function aux_code_filter.func(translation, env)
 
             else -- 不仅仅是三个字母的时候，走这个分支。
                 for cand in translation:iter() do
+                    -- logger.debug("cand.text: " .. cand.text .. " cand.preedit: " .. cand.preedit .. " cand.type: " .. cand.type .. " cand.start: " .. cand.start .. " cand._end: " .. cand._end)
                     count = count + 1
                     local left_position = current_end - cand._end
                     if left_position == 0 then
@@ -614,13 +615,19 @@ function aux_code_filter.func(translation, env)
                         -- 这些就是最后一个字母参与到组词的数据, 在这里应该有原生的preedit,我直接获取到就可以了
                         -- 直接获取到preedit, 然后将preedit中的最后一个音节替换为last_code, 然后将替换后的内容作为新的preedit
                         if not first_preedit then
-                            first_preedit = cand.preedit or ""
-                            -- logger.debug("first_preedit: " .. first_preedit)
-                            -- 去掉收尾空格并删除最后一个音节（以空格分隔）
-                            local trimmed = first_preedit:gsub("%s+$", "")
-                            local without_last = trimmed:match("^(.*)%s+[^%s]+$")
-                            first_preedit = without_last or ""
-                            logger.debug("first_preedit去除最后一个音节: " .. first_preedit)
+                            local cand_preedit = cand.preedit or ""
+                            -- 如果preedit当中有空格存在, 说明是汉语候选词,如果没有说明是英文候选词
+                            if cand_preedit:find("%s") then
+                                -- 去除掉最后的空格
+                                local trimmed = cand_preedit:gsub("%s+$", "")
+                                -- 去除掉最后一组空格和拼音
+                                local without_last = trimmed:match("^(.*)%s+[^%s]+$")
+                                first_preedit = without_last
+                            else
+                                -- 候选词的preedit当中没有空格，说明有问题，应该是英文的候选词，所以对于候选词应该直接输出
+                                -- 直接用当前的preedit就可以
+                                yield(cand)
+                            end
                         end
                     else
                         -- 剩余的长度不足以覆盖全部输入的候选项, 从匹配到字符的顺序进行依次排列

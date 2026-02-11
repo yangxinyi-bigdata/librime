@@ -125,7 +125,7 @@ std::filesystem::path ResolveAuxCodePath(const std::string& basename) {
     return std::filesystem::path();
   }
   const std::string user_dir = api->get_user_data_dir();
-  auto base = std::filesystem::path(user_dir) / "lua" / "aux_code";
+  auto base = std::filesystem::path(user_dir) / "aux_code";
   return base / (basename + ".txt");
 }
 
@@ -409,6 +409,12 @@ an<Translation> AuxCodeFilterV3::Apply(an<Translation> translation,
     return translation;
   }
 
+  // 与 Lua 实现保持一致：只要最后三位（清理前）包含标点，
+  // 本轮不进入辅助码重排逻辑，直接回退原始候选序列。
+  if (last_three_has_punctuation) {
+    return translation;
+  }
+
   if (fuzhu_mode == "single") {
     return translation;
   }
@@ -429,10 +435,6 @@ an<Translation> AuxCodeFilterV3::Apply(an<Translation> translation,
   std::string last_code = Utf8Last(segment_input);
 
   if (fuzhu_mode == "all") {
-    if (last_three_has_punctuation) {
-      set_fuzhuma_ = false;
-      return translation;
-    }
     set_fuzhuma_ = true;
     return HandleAllMode(segment_input, last_code, last_three_code,
                          current_end, translation);
